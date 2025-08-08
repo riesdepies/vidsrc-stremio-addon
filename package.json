@@ -1,11 +1,11 @@
 {
-	"name": "stremio-addon-VidSrc",
-	"version": "0.0.1",
-	"description": "Fetches VidSrc streaming sources",
-	"scripts": {
-		"start": "node server.js"
-	},
-	"dependencies": {
-		"stremio-addon-sdk": "1.1.x"
-	}
+  "name": "stremio-addon-VidSrc",
+  "version": "0.0.1",
+  "description": "Fetches VidSrc streaming sources",
+  "dependencies": {
+    "stremio-addon-sdk": "1.1.x"
+  },
+  "engines": {
+    "node": "18.x"
+  }
 }
