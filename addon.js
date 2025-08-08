@@ -1,4 +1,5 @@
-const { addonBuilder } = require("stremio-addon-sdk"); // serveHTTP is hier niet meer nodig
+const { addonBuilder } = require("stremio-addon-sdk");
+const fetch = require('node-fetch'); // <-- DEZE REGEL IS TOEGEVOEGD
 
 // --- CONFIGURATIE ---
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
@@ -19,5 +20,5 @@ async function getVidSrcStream(type, imdbId, season, episode) { for (const domai
 const builder = new addonBuilder(manifest);
 builder.defineStreamHandler(async ({ type, id }) => { console.log(`[REQUEST] Stream verzoek voor: type=${type}, id=${id}`); const [imdbId, season, episode] = id.split(':'); if (!imdbId) { return Promise.resolve({ streams: [] }); } const streamUrl = await getVidSrcStream(type, imdbId, season, episode); if (streamUrl) { const stream = { url: streamUrl, title: "VidSrc Stream" }; return Promise.resolve({ streams: [stream] }); } else { return Promise.resolve({ streams: [] }); } });
 
-// Exporteer de addon INTERFACE, niet een server.
+// Exporteer de addon INTERFACE
 module.exports = builder.getInterface();
