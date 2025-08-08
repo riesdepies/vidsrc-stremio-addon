@@ -1,17 +1,4 @@
 {
-  "version": 2,
-  "functions": {
-    "addon.js": {
-      "maxDuration": 15,
-      "memory": 1024
-    }
-  },
-  "builds": [
-    {
-      "src": "addon.js",
-      "use": "@vercel/node"
-    }
-  ],
   "rewrites": [
     {
       "source": "/(.*)",
