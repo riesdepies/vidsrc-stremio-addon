@@ -49,7 +49,7 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// *** FUNCTIE VEREENVOUDIGD: ZOEKT ALLEEN DE MASTER M3U8 URL, PARSET NIET MEER ***
+// *** FUNCTIE VEREENVOUDIGD: ZOEKT ALLEEN DE MASTER M3U8 URL EN HET DOMEIN ***
 async function getVidSrcMasterUrl(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     for (const domain of VIDSRC_DOMAINS) {
@@ -63,7 +63,7 @@ async function getVidSrcMasterUrl(type, imdbId, season, episode) {
 
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
                 const response = await fetch(currentUrl, {
-                    headers: { 
+                    headers: {
                         'Referer': previousUrl || initialTarget,
                         'User-Agent': FAKE_USER_AGENT
                     }
@@ -74,7 +74,7 @@ async function getVidSrcMasterUrl(type, imdbId, season, episode) {
                 const m3u8Url = extractM3u8Url(html);
 
                 if (m3u8Url) {
-                    // Gevonden! Geef URL en domein terug. Taak volbracht.
+                    // Gevonden! Geef de master URL en het domein terug en stop.
                     return { masterUrl: m3u8Url, sourceDomain: domain };
                 }
 
@@ -100,15 +100,15 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (!imdbId) {
         return Promise.resolve({ streams: [] });
     }
-    
-    // Vraag de master URL en het brondomein op
-    const streamSource = await getVidSrcMasterUrl(type, imdbId, season, episode);
 
-    if (streamSource) {
-        // Bouw het stream object met de gevraagde informatie
+    // Ontvang het object met de master URL en het domein
+    const sourceInfo = await getVidSrcMasterUrl(type, imdbId, season, episode);
+
+    if (sourceInfo) {
+        // Bouw het stream object met de master URL en de gewenste titel
         const stream = {
-            url: streamSource.masterUrl,
-            title: streamSource.sourceDomain // Titel is alleen het domein
+            url: sourceInfo.masterUrl,
+            title: `${sourceInfo.sourceDomain} (adaptive)`
         };
         return Promise.resolve({ streams: [stream] });
     }
