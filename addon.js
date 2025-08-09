@@ -20,21 +20,18 @@ const manifest = {
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
-const FAKE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
 
-// *** TOEGEVOEGD: Helper-functie om een array willekeurig te husselen ***
-function shuffleArray(array) {
-    for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
-    }
-}
-
-// *** TOEGEVOEGD: Helper-functie voor een willekeurige vertraging ***
-function sleep(minMs, maxMs) {
-    const delay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
-    return new Promise(resolve => setTimeout(resolve, delay));
-}
+// *** TOEGEVOEGD: Uitgebreide set headers om een browser te simuleren ***
+const COMMON_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Site': 'cross-site',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Dest': 'iframe',
+};
 
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
@@ -49,7 +46,9 @@ function findJsIframeSrc(html) {
         const url = match[1];
         if (url) {
             const path = url.split('?')[0].split('#')[0];
-            if (!path.endsWith('.js')) { return url; }
+            if (!path.endsWith('.js')) {
+                return url;
+            }
         }
     }
     return null;
@@ -63,12 +62,7 @@ function findHtmlIframeSrc(html) {
 
 async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
-    
-    // *** AANGEPAST: Hussel de domeinlijst voor elke aanroep ***
-    const shuffledDomains = [...VIDSRC_DOMAINS];
-    shuffleArray(shuffledDomains);
-    
-    for (const domain of shuffledDomains) {
+    for (const domain of VIDSRC_DOMAINS) {
         try {
             let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
             if (type === 'series' && season && episode) {
@@ -79,11 +73,10 @@ async function getVidSrcStream(type, imdbId, season, episode) {
 
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
                 const response = await fetch(currentUrl, {
+                    // *** AANGEPAST: Gebruik de uitgebreide headers ***
                     headers: {
+                        ...COMMON_HEADERS,
                         'Referer': previousUrl || initialTarget,
-                        'User-Agent': FAKE_USER_AGENT,
-                        // *** TOEGEVOEGD: Extra header voor legitimiteit ***
-                        'Accept-Language': 'nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7'
                     }
                 });
                 if (!response.ok) break;
@@ -94,9 +87,6 @@ async function getVidSrcStream(type, imdbId, season, episode) {
                 if (m3u8Url) {
                     return { masterUrl: m3u8Url, sourceDomain: domain };
                 }
-                
-                // *** TOEGEVOEGD: Wacht een willekeurige tijd (200-500ms) voor het volgende verzoek ***
-                await sleep(200, 500);
 
                 let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
                 if (nextIframeSrc) {
