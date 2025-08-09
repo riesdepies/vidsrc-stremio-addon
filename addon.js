@@ -20,35 +20,48 @@ const manifest = {
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
-const FAKE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
 
-// *** NIEUWE FUNCTIE: Fetch via een lijst van CORS proxies ***
-// Deze functie bootst het gedrag van de webapp na om blokkades te voorkomen.
+// *** AANGEPAST: Headers object voor een meer realistische browser-simulatie ***
+const BROWSER_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Sec-Fetch-Dest': 'iframe',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'cross-site',
+    'Upgrade-Insecure-Requests': '1',
+};
+
 async function fetchViaProxy(targetUrl, options = {}) {
     const proxies = [
         { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true },
-        // Let op: De URL-structuur is specifiek voor elke proxy
         { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/?', needsEncoding: true },
         { name: 'Codetabs', template: 'https://api.codetabs.com/v1/proxy?quest=', needsEncoding: true },
     ];
 
+    // Combineer de standaard browser-headers met eventuele specifieke headers (zoals Referer)
+    const requestOptions = {
+        ...options,
+        headers: {
+            ...BROWSER_HEADERS,
+            ...(options.headers || {}),
+        }
+    };
+    
     const fetchPromises = proxies.map(proxy => {
         const urlPart = proxy.needsEncoding ? encodeURIComponent(targetUrl) : targetUrl;
         const proxyUrl = proxy.template + urlPart;
-        return fetch(proxyUrl, options);
+        return fetch(proxyUrl, requestOptions);
     });
 
     try {
-        // Gebruik de eerste proxy die succesvol reageert
         const firstSuccessfulResponse = await Promise.any(fetchPromises);
         return firstSuccessfulResponse;
     } catch (error) {
-        // Deze fout treedt op als ALLE proxies falen
         const allErrors = error.errors ? error.errors.map(e => e.message).join('; ') : 'Unknown error';
         throw new Error(`All CORS proxies failed for ${targetUrl}. Errors: ${allErrors}`);
     }
 }
-
 
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
@@ -61,12 +74,7 @@ function findJsIframeSrc(html) {
     let match;
     while ((match = combinedRegex.exec(html)) !== null) {
         const url = match[1];
-        if (url) {
-            const path = url.split('?')[0].split('#')[0];
-            if (!path.endsWith('.js')) {
-                return url;
-            }
-        }
+        if (url) { const path = url.split('?')[0].split('#')[0]; if (!path.endsWith('.js')) { return url; } }
     }
     return null;
 }
@@ -82,19 +90,13 @@ async function getVidSrcMasterUrl(type, imdbId, season, episode) {
     for (const domain of VIDSRC_DOMAINS) {
         try {
             let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
-            if (type === 'series' && season && episode) {
-                initialTarget += `/${season}-${episode}`;
-            }
+            if (type === 'series' && season && episode) { initialTarget += `/${season}-${episode}`; }
             let currentUrl = initialTarget;
             let previousUrl = null;
 
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
-                // *** AANGEPAST: Gebruik de proxy-fetcher in plaats van de directe fetch ***
                 const response = await fetchViaProxy(currentUrl, {
-                    headers: {
-                        'Referer': previousUrl || initialTarget,
-                        'User-Agent': FAKE_USER_AGENT
-                    }
+                    headers: { 'Referer': previousUrl || initialTarget }
                 });
                 if (!response.ok) break;
 
@@ -124,9 +126,7 @@ const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
     const [imdbId, season, episode] = id.split(':');
-    if (!imdbId) {
-        return Promise.resolve({ streams: [] });
-    }
+    if (!imdbId) { return Promise.resolve({ streams: [] }); }
 
     const sourceInfo = await getVidSrcMasterUrl(type, imdbId, season, episode);
 
@@ -137,7 +137,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
         };
         return Promise.resolve({ streams: [stream] });
     }
-
     return Promise.resolve({ streams: [] });
 });
 
