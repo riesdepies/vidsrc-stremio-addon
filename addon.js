@@ -22,6 +22,34 @@ const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vi
 const MAX_REDIRECTS = 5;
 const FAKE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
 
+// *** NIEUWE FUNCTIE: Fetch via een lijst van CORS proxies ***
+// Deze functie bootst het gedrag van de webapp na om blokkades te voorkomen.
+async function fetchViaProxy(targetUrl, options = {}) {
+    const proxies = [
+        { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true },
+        // Let op: De URL-structuur is specifiek voor elke proxy
+        { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/?', needsEncoding: true },
+        { name: 'Codetabs', template: 'https://api.codetabs.com/v1/proxy?quest=', needsEncoding: true },
+    ];
+
+    const fetchPromises = proxies.map(proxy => {
+        const urlPart = proxy.needsEncoding ? encodeURIComponent(targetUrl) : targetUrl;
+        const proxyUrl = proxy.template + urlPart;
+        return fetch(proxyUrl, options);
+    });
+
+    try {
+        // Gebruik de eerste proxy die succesvol reageert
+        const firstSuccessfulResponse = await Promise.any(fetchPromises);
+        return firstSuccessfulResponse;
+    } catch (error) {
+        // Deze fout treedt op als ALLE proxies falen
+        const allErrors = error.errors ? error.errors.map(e => e.message).join('; ') : 'Unknown error';
+        throw new Error(`All CORS proxies failed for ${targetUrl}. Errors: ${allErrors}`);
+    }
+}
+
+
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
     const match = htmlContent.match(regex);
@@ -49,7 +77,6 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// *** FUNCTIE VEREENVOUDIGD: ZOEKT ALLEEN DE MASTER M3U8 URL EN HET DOMEIN ***
 async function getVidSrcMasterUrl(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     for (const domain of VIDSRC_DOMAINS) {
@@ -62,7 +89,8 @@ async function getVidSrcMasterUrl(type, imdbId, season, episode) {
             let previousUrl = null;
 
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
-                const response = await fetch(currentUrl, {
+                // *** AANGEPAST: Gebruik de proxy-fetcher in plaats van de directe fetch ***
+                const response = await fetchViaProxy(currentUrl, {
                     headers: {
                         'Referer': previousUrl || initialTarget,
                         'User-Agent': FAKE_USER_AGENT
@@ -74,7 +102,6 @@ async function getVidSrcMasterUrl(type, imdbId, season, episode) {
                 const m3u8Url = extractM3u8Url(html);
 
                 if (m3u8Url) {
-                    // Gevonden! Geef de master URL en het domein terug en stop.
                     return { masterUrl: m3u8Url, sourceDomain: domain };
                 }
 
@@ -90,7 +117,7 @@ async function getVidSrcMasterUrl(type, imdbId, season, episode) {
             console.error(`[ERROR] Fout bij verwerken van domein ${domain}:`, error.message);
         }
     }
-    return null; // Geen stream gevonden
+    return null;
 }
 
 const builder = new addonBuilder(manifest);
@@ -101,11 +128,9 @@ builder.defineStreamHandler(async ({ type, id }) => {
         return Promise.resolve({ streams: [] });
     }
 
-    // Ontvang het object met de master URL en het domein
     const sourceInfo = await getVidSrcMasterUrl(type, imdbId, season, episode);
 
     if (sourceInfo) {
-        // Bouw het stream object met de master URL en de gewenste titel
         const stream = {
             url: sourceInfo.masterUrl,
             title: `${sourceInfo.sourceDomain} (adaptive)`
