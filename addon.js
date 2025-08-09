@@ -68,7 +68,7 @@ async function getVidSrcStream(type, imdbId, season, episode) {
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
                 if (m3u8Url) {
-                    // *** AANGEPAST: Geef een object terug met URL en domein ***
+                    // Geef een object terug met de gevonden URL en het brondomein
                     return { masterUrl: m3u8Url, sourceDomain: domain };
                 }
                 let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
@@ -87,54 +87,6 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     return null;
 }
 
-function getResolutionLabel(resolutionString) {
-    if (!resolutionString) return 'SD';
-    const height = parseInt(resolutionString.split('x')[1], 10);
-    if (height >= 2160) return '4K';
-    if (height >= 1080) return '1080p';
-    if (height >= 720) return '720p';
-    if (height >= 480) return '480p';
-    return 'SD';
-}
-
-async function getBestStreamFromM3u8(masterUrl) {
-    try {
-        const response = await fetch(masterUrl);
-        if (!response.ok) return null;
-        const m3u8Content = await response.text();
-        const lines = m3u8Content.trim().split('\n');
-        let bestStream = { bandwidth: 0, url: null, resolution: null };
-        for (let i = 0; i < lines.length; i++) {
-            if (lines[i].startsWith('#EXT-X-STREAM-INF:')) {
-                const infoLine = lines[i];
-                const urlLine = lines[i + 1];
-                const bandwidthMatch = infoLine.match(/BANDWIDTH=(\d+)/);
-                const resolutionMatch = infoLine.match(/RESOLUTION=([^,]+)/);
-                if (bandwidthMatch && urlLine && !urlLine.startsWith('#')) {
-                    const bandwidth = parseInt(bandwidthMatch[1], 10);
-                    if (bandwidth > bestStream.bandwidth) {
-                        bestStream = {
-                            bandwidth: bandwidth,
-                            url: urlLine.trim(),
-                            resolution: resolutionMatch ? resolutionMatch[1] : null
-                        };
-                    }
-                }
-            }
-        }
-        if (bestStream.url) {
-            return {
-                streamUrl: new URL(bestStream.url, masterUrl).href,
-                resolutionLabel: getResolutionLabel(bestStream.resolution)
-            };
-        }
-        return null;
-    } catch (error) {
-        console.error(`[ERROR] Kon M3U8 niet parsen (${masterUrl}):`, error.message);
-        return null;
-    }
-}
-
 const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
@@ -143,30 +95,19 @@ builder.defineStreamHandler(async ({ type, id }) => {
         return Promise.resolve({ streams: [] });
     }
 
-    // *** AANGEPAST: Ontvang het object met URL en domein ***
+    // Vraag de bron op (URL + domein)
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
     if (streamSource) {
-        const { masterUrl, sourceDomain } = streamSource;
-        const bestStreamInfo = await getBestStreamFromM3u8(masterUrl);
-
-        if (bestStreamInfo) {
-            const stream = {
-                url: bestStreamInfo.streamUrl,
-                // *** AANGEPAST: Gebruik het domein in de titel ***
-                title: `${sourceDomain} (${bestStreamInfo.resolutionLabel})`
-            };
-            return Promise.resolve({ streams: [stream] });
-        } else {
-            const stream = {
-                url: masterUrl,
-                // *** AANGEPAST: Gebruik het domein in de titel (fallback) ***
-                title: `${sourceDomain} (Auto)`
-            };
-            return Promise.resolve({ streams: [stream] });
-        }
+        // Maak direct een stream aan met de master M3U8 URL
+        const stream = {
+            url: streamSource.masterUrl,
+            title: streamSource.sourceDomain // Toon alleen het domein als titel
+        };
+        return Promise.resolve({ streams: [stream] });
     }
 
+    // Geen stream gevonden
     return Promise.resolve({ streams: [] });
 });
 
