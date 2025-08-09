@@ -8,7 +8,6 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- CONFIGURATIE ---
 const PLAYER_USER_AGENT = 'VLC/3.0.17.4 LibVLC/3.0.17.4';
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
-// *** AANGEPAST: MAX_REDIRECTS is nu 5 ***
 const MAX_REDIRECTS = 5;
 
 // --- MANIFEST ---
@@ -62,7 +61,8 @@ async function getVidSrcStream(type, imdbId, season, episode) {
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
                 if (m3u8Url) {
-                    return { masterUrl: m3u8Url, sourceDomain: domain };
+                    // *** AANGEPAST: Geef ook de referer (de huidige URL) terug ***
+                    return { masterUrl: m3u8Url, sourceDomain: domain, refererUrl: currentUrl };
                 }
                 let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
                 if (nextIframeSrc) {
@@ -76,9 +76,16 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     return null;
 }
 
-async function getBestStreamFromM3u8(masterUrl) {
+// *** AANGEPAST: Functie accepteert nu een refererUrl ***
+async function getBestStreamFromM3u8(masterUrl, refererUrl) {
     try {
-        const response = await fetch(masterUrl, { headers: { 'User-Agent': PLAYER_USER_AGENT } });
+        // *** AANGEPAST: Gebruik de correcte referer bij het fetchen van de M3U8 ***
+        const response = await fetch(masterUrl, { 
+            headers: { 
+                'User-Agent': PLAYER_USER_AGENT,
+                'Referer': refererUrl 
+            } 
+        });
         if (!response.ok) return null;
         const m3u8Content = await response.text();
         const lines = m3u8Content.trim().split('\n');
@@ -102,7 +109,6 @@ async function getBestStreamFromM3u8(masterUrl) {
             }
         }
         if (bestStream.url) {
-            // *** AANGEPAST: Geef de onbewerkte resolutiestring terug ***
             return {
                 streamUrl: new URL(bestStream.url, masterUrl).href,
                 resolution: bestStream.resolution
@@ -121,12 +127,13 @@ builder.defineStreamHandler(async ({ type, id }) => {
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
     if (streamSource) {
-        const { masterUrl, sourceDomain } = streamSource;
-        const bestStreamInfo = await getBestStreamFromM3u8(masterUrl);
+        // *** AANGEPAST: Haal ook de refererUrl op ***
+        const { masterUrl, sourceDomain, refererUrl } = streamSource;
+        // *** AANGEPAST: Geef de refererUrl mee ***
+        const bestStreamInfo = await getBestStreamFromM3u8(masterUrl, refererUrl);
 
         if (bestStreamInfo) {
             const { streamUrl, resolution } = bestStreamInfo;
-            // *** AANGEPAST: Gebruik de onbewerkte resolutie in de titel ***
             const title = resolution ? `${sourceDomain} (${resolution})` : `${sourceDomain} (HD)`;
             const stream = {
                 url: streamUrl,
@@ -134,7 +141,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
             };
             return Promise.resolve({ streams: [stream] });
         } else {
-            // Fallback als het parsen van de M3U8 mislukt
             const stream = {
                 url: masterUrl,
                 title: `${sourceDomain} (Auto)`
