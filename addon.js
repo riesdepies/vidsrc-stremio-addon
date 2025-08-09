@@ -46,8 +46,9 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     for (const domain of VIDSRC_DOMAINS) {
         try {
-            let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
-            if (type === 'series' && season && episode) { initialTarget += `/${season}-${episode}`; }
+            // *** AANGEPAST: De initiële URL wordt hier vastgelegd ***
+            const initialTarget = `https://${domain}/embed/${apiType}/${imdbId}${type === 'series' && season && episode ? `/${season}-${episode}` : ''}`;
+            
             let currentUrl = initialTarget;
             let previousUrl = null;
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
@@ -61,8 +62,8 @@ async function getVidSrcStream(type, imdbId, season, episode) {
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
                 if (m3u8Url) {
-                    // *** AANGEPAST: Geef ook de referer (de huidige URL) terug ***
-                    return { masterUrl: m3u8Url, sourceDomain: domain, refererUrl: currentUrl };
+                    // *** AANGEPAST: Geef de *initiële* URL terug als de baseReferer ***
+                    return { masterUrl: m3u8Url, sourceDomain: domain, baseReferer: initialTarget };
                 }
                 let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
                 if (nextIframeSrc) {
@@ -76,14 +77,14 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     return null;
 }
 
-// *** AANGEPAST: Functie accepteert nu een refererUrl ***
-async function getBestStreamFromM3u8(masterUrl, refererUrl) {
+// *** AANGEPAST: Functie accepteert nu een baseReferer ***
+async function getBestStreamFromM3u8(masterUrl, baseReferer) {
     try {
-        // *** AANGEPAST: Gebruik de correcte referer bij het fetchen van de M3U8 ***
+        // *** AANGEPAST: Gebruik de baseReferer van het Vidsrc domein ***
         const response = await fetch(masterUrl, { 
             headers: { 
                 'User-Agent': PLAYER_USER_AGENT,
-                'Referer': refererUrl 
+                'Referer': baseReferer 
             } 
         });
         if (!response.ok) return null;
@@ -127,10 +128,10 @@ builder.defineStreamHandler(async ({ type, id }) => {
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
     if (streamSource) {
-        // *** AANGEPAST: Haal ook de refererUrl op ***
-        const { masterUrl, sourceDomain, refererUrl } = streamSource;
-        // *** AANGEPAST: Geef de refererUrl mee ***
-        const bestStreamInfo = await getBestStreamFromM3u8(masterUrl, refererUrl);
+        // *** AANGEPAST: Haal de baseReferer op ***
+        const { masterUrl, sourceDomain, baseReferer } = streamSource;
+        // *** AANGEPAST: Geef de baseReferer mee ***
+        const bestStreamInfo = await getBestStreamFromM3u8(masterUrl, baseReferer);
 
         if (bestStreamInfo) {
             const { streamUrl, resolution } = bestStreamInfo;
