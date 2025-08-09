@@ -6,7 +6,8 @@ const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
 const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
 
 // --- CONFIGURATIE ---
-const PLAYER_USER_AGENT = 'VLC/3.0.17.4 LibVLC/3.0.17.4';
+// *** AANGEPAST: User-Agent van een bekende web browser/player ***
+const PLAYER_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
 
@@ -46,7 +47,7 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     for (const domain of VIDSRC_DOMAINS) {
         try {
-            // *** AANGEPAST: De initiële URL wordt hier vastgelegd ***
+            // *** AANGEPAST: De initiële URL wordt de 'player Referer' ***
             const initialTarget = `https://${domain}/embed/${apiType}/${imdbId}${type === 'series' && season && episode ? `/${season}-${episode}` : ''}`;
             
             let currentUrl = initialTarget;
@@ -62,8 +63,8 @@ async function getVidSrcStream(type, imdbId, season, episode) {
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
                 if (m3u8Url) {
-                    // *** AANGEPAST: Geef de *initiële* URL terug als de baseReferer ***
-                    return { masterUrl: m3u8Url, sourceDomain: domain, baseReferer: initialTarget };
+                    // *** AANGEPAST: Geef de initiële URL terug als referer voor de M3U8 fetch ***
+                    return { masterUrl: m3u8Url, sourceDomain: domain, playerReferer: initialTarget };
                 }
                 let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
                 if (nextIframeSrc) {
@@ -77,14 +78,14 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     return null;
 }
 
-// *** AANGEPAST: Functie accepteert nu een baseReferer ***
-async function getBestStreamFromM3u8(masterUrl, baseReferer) {
+// *** AANGEPAST: Functie accepteert nu 'playerReferer' ***
+async function getBestStreamFromM3u8(masterUrl, playerReferer) {
     try {
-        // *** AANGEPAST: Gebruik de baseReferer van het Vidsrc domein ***
         const response = await fetch(masterUrl, { 
             headers: { 
                 'User-Agent': PLAYER_USER_AGENT,
-                'Referer': baseReferer 
+                // *** AANGEPAST: Gebruik de initiële vidsrc URL als referer ***
+                'Referer': playerReferer 
             } 
         });
         if (!response.ok) return null;
@@ -128,10 +129,8 @@ builder.defineStreamHandler(async ({ type, id }) => {
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
     if (streamSource) {
-        // *** AANGEPAST: Haal de baseReferer op ***
-        const { masterUrl, sourceDomain, baseReferer } = streamSource;
-        // *** AANGEPAST: Geef de baseReferer mee ***
-        const bestStreamInfo = await getBestStreamFromM3u8(masterUrl, baseReferer);
+        const { masterUrl, sourceDomain, playerReferer } = streamSource;
+        const bestStreamInfo = await getBestStreamFromM3u8(masterUrl, playerReferer);
 
         if (bestStreamInfo) {
             const { streamUrl, resolution } = bestStreamInfo;
