@@ -2,23 +2,25 @@ const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
 
 // --- DYNAMISCHE HOST & ICOON URL ---
-// Vercel stelt de VERCEL_URL variabele beschikbaar. We gebruiken die om de absolute URL te bouwen.
-const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000'; // Fallback voor lokale ontwikkeling
-const iconUrl = host.startsWith('http') ? `${host}/icon.svg` : `https://${host}/icon.svg`;
+const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
+// DEZE REGEL IS AANGEPAST NAAR .png
+const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
 
 
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.1.0",
+    "version": "1.1.0", // Tip: verhoog dit naar 1.1.1 om Stremio te helpen zien dat er een update is.
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
-    "icon": iconUrl, // <-- DEZE REGEL IS AANGEPAST OM DE VOLLEDIGE URL TE GEBRUIKEN
+    "icon": iconUrl,
     "catalogs": [],
     "resources": ["stream"],
     "types": ["movie", "series"],
     "idPrefixes": ["tt"]
 };
+
+// ... (de rest van je code blijft ongewijzigd) ...
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 10;
