@@ -20,48 +20,7 @@ const manifest = {
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
-
-// *** AANGEPAST: Headers object voor een meer realistische browser-simulatie ***
-const BROWSER_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Sec-Fetch-Dest': 'iframe',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'cross-site',
-    'Upgrade-Insecure-Requests': '1',
-};
-
-async function fetchViaProxy(targetUrl, options = {}) {
-    const proxies = [
-        { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true },
-        { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/?', needsEncoding: true },
-        { name: 'Codetabs', template: 'https://api.codetabs.com/v1/proxy?quest=', needsEncoding: true },
-    ];
-
-    // Combineer de standaard browser-headers met eventuele specifieke headers (zoals Referer)
-    const requestOptions = {
-        ...options,
-        headers: {
-            ...BROWSER_HEADERS,
-            ...(options.headers || {}),
-        }
-    };
-    
-    const fetchPromises = proxies.map(proxy => {
-        const urlPart = proxy.needsEncoding ? encodeURIComponent(targetUrl) : targetUrl;
-        const proxyUrl = proxy.template + urlPart;
-        return fetch(proxyUrl, requestOptions);
-    });
-
-    try {
-        const firstSuccessfulResponse = await Promise.any(fetchPromises);
-        return firstSuccessfulResponse;
-    } catch (error) {
-        const allErrors = error.errors ? error.errors.map(e => e.message).join('; ') : 'Unknown error';
-        throw new Error(`All CORS proxies failed for ${targetUrl}. Errors: ${allErrors}`);
-    }
-}
+const FAKE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
 
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
@@ -74,7 +33,12 @@ function findJsIframeSrc(html) {
     let match;
     while ((match = combinedRegex.exec(html)) !== null) {
         const url = match[1];
-        if (url) { const path = url.split('?')[0].split('#')[0]; if (!path.endsWith('.js')) { return url; } }
+        if (url) {
+            const path = url.split('?')[0].split('#')[0];
+            if (!path.endsWith('.js')) {
+                return url;
+            }
+        }
     }
     return null;
 }
@@ -85,25 +49,32 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-async function getVidSrcMasterUrl(type, imdbId, season, episode) {
+// *** FUNCTIE VEREENVOUDIGD: VINDT ALLEEN DE MASTER M3U8 EN HET DOMEIN ***
+async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     for (const domain of VIDSRC_DOMAINS) {
         try {
             let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
-            if (type === 'series' && season && episode) { initialTarget += `/${season}-${episode}`; }
+            if (type === 'series' && season && episode) {
+                initialTarget += `/${season}-${episode}`;
+            }
             let currentUrl = initialTarget;
             let previousUrl = null;
 
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
-                const response = await fetchViaProxy(currentUrl, {
-                    headers: { 'Referer': previousUrl || initialTarget }
+                const response = await fetch(currentUrl, {
+                    headers: {
+                        'Referer': previousUrl || initialTarget,
+                        'User-Agent': FAKE_USER_AGENT
+                    }
                 });
                 if (!response.ok) break;
-
+                
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
 
                 if (m3u8Url) {
+                    // Gevonden! Geef de master URL en het domein terug en stop.
                     return { masterUrl: m3u8Url, sourceDomain: domain };
                 }
 
@@ -124,19 +95,23 @@ async function getVidSrcMasterUrl(type, imdbId, season, episode) {
 
 const builder = new addonBuilder(manifest);
 
+// *** HANDLER AANGEPAST OM DE VEREENVOUDIGDE DATA TE GEBRUIKEN ***
 builder.defineStreamHandler(async ({ type, id }) => {
     const [imdbId, season, episode] = id.split(':');
-    if (!imdbId) { return Promise.resolve({ streams: [] }); }
+    if (!imdbId) {
+        return Promise.resolve({ streams: [] });
+    }
 
-    const sourceInfo = await getVidSrcMasterUrl(type, imdbId, season, episode);
+    const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
-    if (sourceInfo) {
+    if (streamSource) {
         const stream = {
-            url: sourceInfo.masterUrl,
-            title: `${sourceInfo.sourceDomain} (adaptive)`
+            url: streamSource.masterUrl,
+            title: streamSource.sourceDomain // Toon alleen het domein als titel
         };
         return Promise.resolve({ streams: [stream] });
     }
+
     return Promise.resolve({ streams: [] });
 });
 
