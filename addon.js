@@ -68,7 +68,8 @@ async function getVidSrcStream(type, imdbId, season, episode) {
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
                 if (m3u8Url) {
-                    return m3u8Url;
+                    // *** AANGEPAST: Geef een object terug met URL en domein ***
+                    return { masterUrl: m3u8Url, sourceDomain: domain };
                 }
                 let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
                 if (nextIframeSrc) {
@@ -86,7 +87,6 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     return null;
 }
 
-// *** NIEUWE FUNCTIE: Converteert resolutie naar een label (bv. 1080p) ***
 function getResolutionLabel(resolutionString) {
     if (!resolutionString) return 'SD';
     const height = parseInt(resolutionString.split('x')[1], 10);
@@ -97,24 +97,19 @@ function getResolutionLabel(resolutionString) {
     return 'SD';
 }
 
-// *** NIEUWE FUNCTIE: Fetchet en parset de M3U8 om de beste stream te vinden ***
 async function getBestStreamFromM3u8(masterUrl) {
     try {
         const response = await fetch(masterUrl);
         if (!response.ok) return null;
         const m3u8Content = await response.text();
-
         const lines = m3u8Content.trim().split('\n');
         let bestStream = { bandwidth: 0, url: null, resolution: null };
-
         for (let i = 0; i < lines.length; i++) {
             if (lines[i].startsWith('#EXT-X-STREAM-INF:')) {
                 const infoLine = lines[i];
                 const urlLine = lines[i + 1];
-
                 const bandwidthMatch = infoLine.match(/BANDWIDTH=(\d+)/);
                 const resolutionMatch = infoLine.match(/RESOLUTION=([^,]+)/);
-
                 if (bandwidthMatch && urlLine && !urlLine.startsWith('#')) {
                     const bandwidth = parseInt(bandwidthMatch[1], 10);
                     if (bandwidth > bestStream.bandwidth) {
@@ -127,9 +122,7 @@ async function getBestStreamFromM3u8(masterUrl) {
                 }
             }
         }
-
         if (bestStream.url) {
-            // Construeer de volledige URL en voeg het resolutielabel toe
             return {
                 streamUrl: new URL(bestStream.url, masterUrl).href,
                 resolutionLabel: getResolutionLabel(bestStream.resolution)
@@ -150,25 +143,25 @@ builder.defineStreamHandler(async ({ type, id }) => {
         return Promise.resolve({ streams: [] });
     }
 
-    // Stap 1: Krijg de master M3U8 URL
-    const masterUrl = await getVidSrcStream(type, imdbId, season, episode);
+    // *** AANGEPAST: Ontvang het object met URL en domein ***
+    const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
-    if (masterUrl) {
-        // Stap 2: Probeer de beste kwaliteit stream uit de master M3U8 te halen
+    if (streamSource) {
+        const { masterUrl, sourceDomain } = streamSource;
         const bestStreamInfo = await getBestStreamFromM3u8(masterUrl);
 
         if (bestStreamInfo) {
-            // Gevonden: maak een stream aan met de directe URL en het kwaliteitslabel
             const stream = {
                 url: bestStreamInfo.streamUrl,
-                title: `Nepflix Stream (${bestStreamInfo.resolutionLabel})`
+                // *** AANGEPAST: Gebruik het domein in de titel ***
+                title: `${sourceDomain} (${bestStreamInfo.resolutionLabel})`
             };
             return Promise.resolve({ streams: [stream] });
         } else {
-            // Fallback: als parsen mislukt, gebruik de master URL zodat de player zelf kiest
             const stream = {
                 url: masterUrl,
-                title: "Nepflix Stream (Auto)"
+                // *** AANGEPAST: Gebruik het domein in de titel (fallback) ***
+                title: `${sourceDomain} (Auto)`
             };
             return Promise.resolve({ streams: [stream] });
         }
