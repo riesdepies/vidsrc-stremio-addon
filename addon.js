@@ -1,6 +1,6 @@
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
-const AbortController = require('abort-controller'); // Nodig voor timeouts in node-fetch
+const AbortController = require('abort-controller');
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
@@ -9,7 +9,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.2.0", // Versie verhoogd vanwege significante wijzigingen
+    "version": "1.2.1", // Versie verhoogd
     "name": "Nepflix",
     "description": "HLS streams van VidSrc - sneller en robuuster.",
     "icon": iconUrl,
@@ -21,7 +21,7 @@ const manifest = {
 
 const VIDSRC_DOMAINS = ["vidsrc.to", "vidsrc.xyz", "vidsrc.me", "vidsrc.net", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
-const REQUEST_TIMEOUT = 5000; // 5 seconden timeout per request
+const REQUEST_TIMEOUT = 5000;
 
 const COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
@@ -33,36 +33,32 @@ const COMMON_HEADERS = {
     'Upgrade-Insecure-Requests': '1',
 };
 
-// --- VERBETERING: Functies die Regex gebruiken voor HTML-parsing ---
+// --- OORSPRONKELIJKE, WERKEND REGEX FUNCTIES HERSTELD ---
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
     const match = htmlContent.match(regex);
     return match ? match[1] : null;
 }
 
-function findIframeSrcWithRegex(html) {
-    // Prioriteit 1: Zoek naar een standaard HTML <iframe> tag. Dit is het meest betrouwbaar.
-    const staticRegex = /<iframe[^>]+src\s*=\s*["']([^"']+)["']/;
-    const staticMatch = html.match(staticRegex);
-    if (staticMatch && staticMatch[1]) {
-        return staticMatch[1];
-    }
-
-    // Prioriteit 2 (Fallback): Zoek naar JavaScript-gebaseerde src-toewijzingen.
-    const scriptRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
-    let scriptMatch;
-    while ((scriptMatch = scriptRegex.exec(html)) !== null) {
-        const url = scriptMatch[1];
+function findJsIframeSrc(html) {
+    const combinedRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
+    let match;
+    while ((match = combinedRegex.exec(html)) !== null) {
+        const url = match[1];
         if (url) {
-            // Zorg ervoor dat we geen .js-bestand als bron-URL pakken
             const path = url.split('?')[0].split('#')[0];
             if (!path.endsWith('.js')) {
-                return url; // Retourneer de eerste geldige, niet-.js URL
+                return url;
             }
         }
     }
-    
-    return null; // Geen enkele bron gevonden
+    return null;
+}
+
+function findHtmlIframeSrc(html) {
+    const staticRegex = /<iframe[^>]+src\s*=\s*["']([^"']+)["']/;
+    const match = html.match(staticRegex);
+    return match ? match[1] : null;
 }
 
 
@@ -99,8 +95,8 @@ async function tryDomain(domain, type, imdbId, season, episode) {
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
             
-            // Gebruik de nieuwe regex-functie
-            const nextIframeSrc = findIframeSrcWithRegex(html);
+            // --- HERSTELDE LOGICA: Eerst HTML iframe, dan fallback naar JS ---
+            const nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
 
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
@@ -144,7 +140,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
             return { streams: [stream] };
         }
     } catch (error) {
-        // Promise.any gooit een AggregateError als alle promises falen
         console.error("Alle domeinen zijn gefaald.", error.errors || error.message);
     }
     
