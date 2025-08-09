@@ -19,7 +19,7 @@ const manifest = {
 };
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
-// *** ALLE 8 PROXIES TOEGEVOEGD ***
+// *** VOLLEDIGE LIJST VAN 8 PROXIES ***
 const CORS_PROXIES = [
     { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true },
     { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/', needsEncoding: false },
@@ -33,132 +33,140 @@ const CORS_PROXIES = [
 const MAX_REDIRECTS = 5;
 const FAKE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
 
-function extractM3u8Url(htmlContent) { const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/; const match = htmlContent.match(regex); return match ? match[1] : null; }
-function findJsIframeSrc(html) { const r = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g; let m; while ((m = r.exec(html)) !== null) { const u = m[1]; if (u) { const p = u.split('?')[0].split('#')[0]; if (!p.endsWith('.js')) return u; } } return null; }
-function findHtmlIframeSrc(html) { const r = /<iframe[^>]+src\s*=\s*["']([^"']+)["']/; const m = html.match(r); return m ? m[1] : null; }
+// --- HELPER FUNCTIES ---
+function extractM3u8Url(html) { const m = html.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/); return m ? m[1] : null; }
+function findNextIframe(html) {
+    const rJs = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
+    let m;
+    while ((m = rJs.exec(html)) !== null) { const u = m[1]; if (u) { const p = u.split('?')[0].split('#')[0]; if (!p.endsWith('.js')) return u; } }
+    const rHtml = /<iframe[^>]+src\s*=\s*["']([^"']+)["']/;
+    m = html.match(rHtml);
+    return m ? m[1] : null;
+}
 
-// FASE 1: Race om de eerste valide pagina te vinden
-async function findInitialWinner(type, imdbId, season, episode) {
+// --- FASE 1: De Start-Race ---
+async function raceForInitialPage(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const promises = VIDSRC_DOMAINS.map(domain => new Promise(async (resolve, reject) => {
+        const initialUrl = `https://${domain}/embed/${apiType}/${imdbId}${type === 'series' ? `/${season}-${episode}` : ''}`;
         try {
-            let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
-            if (type === 'series' && season && episode) { initialTarget += `/${season}-${episode}`; }
-            const response = await fetch(initialTarget, { headers: { 'User-Agent': FAKE_USER_AGENT } });
+            const response = await fetch(initialUrl, { headers: { 'User-Agent': FAKE_USER_AGENT } });
             if (!response.ok) return reject(new Error(`Status ${response.status}`));
-            const html = await response.text();
-            if (html.includes("This media is unavailable at the moment.")) {
-                return resolve({ domain, isUnavailable: true });
+            const pageContent = await response.text();
+            if (findNextIframe(pageContent) || pageContent.includes("This media is unavailable at the moment.")) {
+                resolve({ winnerDomain: domain, pageContent, initialUrl });
+            } else {
+                reject(new Error("Geen iframe of 'unavailable' bericht"));
             }
-            const firstIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
-            if (firstIframeSrc) {
-                return resolve({ domain, initialTarget, firstIframeSrc });
-            }
-            reject(new Error("Geen iframe of 'unavailable' bericht gevonden."));
         } catch (error) { reject(error); }
     }));
-    try { return await Promise.any(promises); }
-    catch (e) { console.log("Fase 1 mislukt: geen enkel domein gaf een valide eerste pagina."); return null; }
-}
 
-// FASE 3: Volg de iframe-keten vanaf een startpunt (directe poging)
-async function findM3u8FromChain(startUrl, initialTarget, domain) {
-    try {
-        let currentUrl = startUrl;
-        let previousUrl = initialTarget;
-        for (let step = 1; step <= MAX_REDIRECTS; step++) {
-            const response = await fetch(currentUrl, { headers: { 'Referer': previousUrl, 'User-Agent': FAKE_USER_AGENT }});
-            if (!response.ok) throw new Error(`Status ${response.status}`);
-            const html = await response.text();
-            const m3u8Url = extractM3u8Url(html);
-            if (m3u8Url) return { url: m3u8Url, title: `${domain} (adaptive)` };
-            const nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
-            if (nextIframeSrc) {
-                previousUrl = currentUrl;
-                currentUrl = new URL(nextIframeSrc, currentUrl).href;
-            } else { break; }
-        }
-    } catch (error) { console.log(`Fase 3 (direct) mislukt voor ${domain}: ${error.message}`); }
-    return null;
-}
-
-// HULPFUNCTIE VOOR FASE 4: Zoektocht via een specifieke proxy
-function getStreamViaProxy(winnerDomain, type, imdbId, season, episode, proxy) {
-    return new Promise(async (resolve, reject) => {
-        try {
-            const apiType = type === 'series' ? 'tv' : 'movie';
-            let initialTarget = `https://${winnerDomain}/embed/${apiType}/${imdbId}`;
-            if (type === 'series' && season && episode) { initialTarget += `/${season}-${episode}`; }
-            
-            let currentUrl = initialTarget;
-            let previousUrl = null;
-
-            for (let step = 1; step <= MAX_REDIRECTS + 1; step++) {
-                const urlPart = proxy.needsEncoding ? encodeURIComponent(currentUrl) : currentUrl;
-                const fetchUrl = proxy.template + urlPart;
-                const response = await fetch(fetchUrl, { headers: { 'User-Agent': FAKE_USER_AGENT } });
-
-                if (!response.ok) return reject(new Error(`Proxy ${proxy.name} faalde met status ${response.status}`));
-                
-                const html = await response.text();
-                const m3u8Url = extractM3u8Url(html);
-                if (m3u8Url) {
-                    return resolve({ url: m3u8Url, title: `${winnerDomain} (via ${proxy.name})` });
-                }
-                const nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
-                if (nextIframeSrc) {
-                    previousUrl = currentUrl;
-                    currentUrl = new URL(nextIframeSrc, currentUrl).href;
-                } else { break; }
-            }
-            reject(new Error(`Proxy ${proxy.name} kon geen m3u8 vinden`));
-        } catch (error) { reject(error); }
-    });
-}
-
-// FASE 4: Proxy-race op het winnende domein
-async function tryProxiedRace(winnerDomain, type, imdbId, season, episode) {
-    console.log(`Start proxy-race op winnend domein: ${winnerDomain}`);
-    const promises = CORS_PROXIES.map(proxy => getStreamViaProxy(winnerDomain, type, imdbId, season, episode, proxy));
     try {
         return await Promise.any(promises);
-    } catch (e) {
-        console.log("Fase 4 mislukt: geen enkele proxy was succesvol.");
+    } catch (error) {
+        console.log("Fase 1 Mislukt: Geen enkel domein gaf een valide startpagina.");
         return null;
     }
 }
 
-const builder = new addonBuilder(manifest);
+// --- FASE 3 & 4: De Diepe Zoektocht (direct of via proxy) ---
+async function deepSearch(initialContent, initialUrl, domain, proxy = null) {
+    let currentHtml = initialContent;
+    let currentUrl = initialUrl;
+    let previousUrl = null;
 
+    for (let i = 0; i < MAX_REDIRECTS; i++) {
+        const m3u8Url = extractM3u8Url(currentHtml);
+        if (m3u8Url) {
+            let title = `${domain} (adaptive)`;
+            if (proxy) title += ` via ${proxy.name}`;
+            return { url: m3u8Url, title };
+        }
+
+        const nextIframeSrc = findNextIframe(currentHtml);
+        if (!nextIframeSrc) return null; // Doodlopende weg
+
+        previousUrl = currentUrl;
+        currentUrl = new URL(nextIframeSrc, currentUrl).href;
+
+        let fetchUrl = currentUrl;
+        if (proxy) {
+            fetchUrl = proxy.template + (proxy.needsEncoding ? encodeURIComponent(currentUrl) : currentUrl);
+        }
+        
+        const response = await fetch(fetchUrl, { headers: { 'Referer': previousUrl, 'User-Agent': FAKE_USER_AGENT } });
+        if (!response.ok) throw new Error(`Status ${response.status} tijdens diep zoeken`);
+        currentHtml = await response.text();
+    }
+    return null; // Max redirects bereikt
+}
+
+// --- FASE 4: De Proxy Race ---
+async function raceWithProxies(initialUrl, domain) {
+    console.log(`Proxy-race gestart voor domein: ${domain}`);
+    const promises = CORS_PROXIES.map(proxy =>
+        // Let op: De proxy moet de *hele* zoektocht opnieuw starten vanaf de initialUrl.
+        // We kunnen niet de pageContent van de directe poging hergebruiken.
+        new Promise(async (resolve, reject) => {
+            try {
+                // Eerst de startpagina ophalen via de proxy
+                const initialFetchUrl = proxy.template + (proxy.needsEncoding ? encodeURIComponent(initialUrl) : initialUrl);
+                const response = await fetch(initialFetchUrl, { headers: { 'User-Agent': FAKE_USER_AGENT } });
+                if (!response.ok) return reject(new Error(`Proxy init faalde: ${proxy.name}`));
+                const initialContent = await response.text();
+                // Nu de diepe zoektocht starten met de content verkregen via de proxy
+                const result = await deepSearch(initialContent, initialUrl, domain, proxy);
+                if (result) resolve(result);
+                else reject(new Error(`Geen m3u8 via ${proxy.name}`));
+            } catch (error) {
+                reject(error);
+            }
+        })
+    );
+    try {
+        return await Promise.any(promises);
+    } catch(error) {
+        console.log("Fase 4 Mislukt: Alle proxies hebben gefaald.");
+        return null;
+    }
+}
+
+// --- DE DIRIGENT ---
+const builder = new addonBuilder(manifest);
 builder.defineStreamHandler(async ({ type, id }) => {
     const [imdbId, season, episode] = id.split(':');
     if (!imdbId) return Promise.resolve({ streams: [] });
 
-    // FASE 1 & 2
-    const winner = await findInitialWinner(type, imdbId, season, episode);
-    if (!winner) return Promise.resolve({ streams: [] });
-    if (winner.isUnavailable) {
-        console.log(`Media niet beschikbaar op winnend domein ${winner.domain}. Stoppen.`);
+    // FASE 1: Race voor de startpagina
+    const initialResult = await raceForInitialPage(type, imdbId, season, episode);
+    if (!initialResult) return Promise.resolve({ streams: [] });
+    console.log(`Fase 1 Gewonnen door: ${initialResult.winnerDomain}`);
+
+    // FASE 2: Analyseer winnaar
+    if (initialResult.pageContent.includes("This media is unavailable at the moment.")) {
+        console.log("Media niet beschikbaar. Zoektocht gestopt.");
         return Promise.resolve({ streams: [] });
     }
-    console.log(`Fase 1 gewonnen door: ${winner.domain}. Start diepe zoektocht.`);
 
-    // FASE 3
-    const startUrl = new URL(winner.firstIframeSrc, winner.initialTarget).href;
-    let stream = await findM3u8FromChain(startUrl, winner.initialTarget, winner.domain);
-
-    // FASE 4 (indien nodig)
-    if (!stream) {
-        console.log(`Directe zoektocht mislukt. Start fallback proxy-race op ${winner.domain}.`);
-        stream = await tryProxiedRace(winner.domain, type, imdbId, season, episode);
+    // FASE 3: Directe diepe zoektocht
+    try {
+        const stream = await deepSearch(initialResult.pageContent, initialResult.initialUrl, initialResult.winnerDomain);
+        if (stream) {
+            console.log("Stream direct gevonden!");
+            return Promise.resolve({ streams: [stream] });
+        }
+    } catch (error) {
+        console.log(`Directe diepe zoektocht mislukt: ${error.message}. Start fallback.`);
     }
 
+    // FASE 4: Fallback naar proxy race
+    const stream = await raceWithProxies(initialResult.initialUrl, initialResult.winnerDomain);
     if (stream) {
-        console.log(`Stream gevonden: ${stream.title}`);
+        console.log("Stream gevonden via proxy-fallback!");
         return Promise.resolve({ streams: [stream] });
     }
 
-    console.log("Geen stream gevonden na alle pogingen.");
+    console.log("Alle pogingen zijn mislukt.");
     return Promise.resolve({ streams: [] });
 });
 
