@@ -3,14 +3,12 @@ const fetch = require('node-fetch');
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
-// DEZE REGEL IS AANGEPAST NAAR .png
 const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
-
 
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.1.0", // Tip: verhoog dit naar 1.1.1 om Stremio te helpen zien dat er een update is.
+    "version": "1.1.0",
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -51,24 +49,15 @@ function findHtmlIframeSrc(html) {
 }
 
 async function getVidSrcStream(type, imdbId, season, episode) {
-    // *** DEZE REGEL IS TOEGEVOEGD ***
-    // Vertaal Stremio 'series' type naar API 'tv' type.
     const apiType = type === 'series' ? 'tv' : 'movie';
-
     for (const domain of VIDSRC_DOMAINS) {
         try {
-            // *** DEZE REGEL IS AANGEPAST ***
-            // Gebruik apiType in plaats van de originele type.
             let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
-            
             if (type === 'series' && season && episode) {
-                // Deel voor seizoen en aflevering blijft ongewijzigd (was al correct)
                 initialTarget += `/${season}-${episode}`;
             }
-
             let currentUrl = initialTarget;
             let previousUrl = null;
-
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
                 const response = await fetch(currentUrl, {
                     headers: { 'Referer': previousUrl || initialTarget }
@@ -97,6 +86,62 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     return null;
 }
 
+// *** NIEUWE FUNCTIE: Converteert resolutie naar een label (bv. 1080p) ***
+function getResolutionLabel(resolutionString) {
+    if (!resolutionString) return 'SD';
+    const height = parseInt(resolutionString.split('x')[1], 10);
+    if (height >= 2160) return '4K';
+    if (height >= 1080) return '1080p';
+    if (height >= 720) return '720p';
+    if (height >= 480) return '480p';
+    return 'SD';
+}
+
+// *** NIEUWE FUNCTIE: Fetchet en parset de M3U8 om de beste stream te vinden ***
+async function getBestStreamFromM3u8(masterUrl) {
+    try {
+        const response = await fetch(masterUrl);
+        if (!response.ok) return null;
+        const m3u8Content = await response.text();
+
+        const lines = m3u8Content.trim().split('\n');
+        let bestStream = { bandwidth: 0, url: null, resolution: null };
+
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].startsWith('#EXT-X-STREAM-INF:')) {
+                const infoLine = lines[i];
+                const urlLine = lines[i + 1];
+
+                const bandwidthMatch = infoLine.match(/BANDWIDTH=(\d+)/);
+                const resolutionMatch = infoLine.match(/RESOLUTION=([^,]+)/);
+
+                if (bandwidthMatch && urlLine && !urlLine.startsWith('#')) {
+                    const bandwidth = parseInt(bandwidthMatch[1], 10);
+                    if (bandwidth > bestStream.bandwidth) {
+                        bestStream = {
+                            bandwidth: bandwidth,
+                            url: urlLine.trim(),
+                            resolution: resolutionMatch ? resolutionMatch[1] : null
+                        };
+                    }
+                }
+            }
+        }
+
+        if (bestStream.url) {
+            // Construeer de volledige URL en voeg het resolutielabel toe
+            return {
+                streamUrl: new URL(bestStream.url, masterUrl).href,
+                resolutionLabel: getResolutionLabel(bestStream.resolution)
+            };
+        }
+        return null;
+    } catch (error) {
+        console.error(`[ERROR] Kon M3U8 niet parsen (${masterUrl}):`, error.message);
+        return null;
+    }
+}
+
 const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
@@ -104,13 +149,32 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (!imdbId) {
         return Promise.resolve({ streams: [] });
     }
-    const streamUrl = await getVidSrcStream(type, imdbId, season, episode);
-    if (streamUrl) {
-        const stream = { url: streamUrl, title: "Nepflix Stream" };
-        return Promise.resolve({ streams: [stream] });
-    } else {
-        return Promise.resolve({ streams: [] });
+
+    // Stap 1: Krijg de master M3U8 URL
+    const masterUrl = await getVidSrcStream(type, imdbId, season, episode);
+
+    if (masterUrl) {
+        // Stap 2: Probeer de beste kwaliteit stream uit de master M3U8 te halen
+        const bestStreamInfo = await getBestStreamFromM3u8(masterUrl);
+
+        if (bestStreamInfo) {
+            // Gevonden: maak een stream aan met de directe URL en het kwaliteitslabel
+            const stream = {
+                url: bestStreamInfo.streamUrl,
+                title: `Nepflix Stream (${bestStreamInfo.resolutionLabel})`
+            };
+            return Promise.resolve({ streams: [stream] });
+        } else {
+            // Fallback: als parsen mislukt, gebruik de master URL zodat de player zelf kiest
+            const stream = {
+                url: masterUrl,
+                title: "Nepflix Stream (Auto)"
+            };
+            return Promise.resolve({ streams: [stream] });
+        }
     }
+
+    return Promise.resolve({ streams: [] });
 });
 
 module.exports = builder.getInterface();
