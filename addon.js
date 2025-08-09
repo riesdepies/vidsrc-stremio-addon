@@ -3,11 +3,12 @@ const fetch = require('node-fetch');
 
 // --- MANIFEST ---
 const manifest = {
-    "id": "community.nepflix.ries", // ID aangepast voor de nieuwe naam
-    "version": "1.1.0", // Versienummer verhoogd
-    "name": "Nepflix", // NIEUWE NAAM
-    "description": "HLS streams van VidSrc", // NIEUWE OMSCHRIJVING
-    "icon": "/logo.svg", // VERWIJZING NAAR HET LOGO
+    "id": "community.nepflix.ries",
+    "version": "1.1.0",
+    "name": "Nepflix",
+    "description": "HLS streams van VidSrc",
+    "icon": "/logo.svg",
+    "catalogs": [], // <-- DEZE REGEL IS HERSTELD
     "resources": ["stream"],
     "types": ["movie", "series"],
     "idPrefixes": ["tt"]
