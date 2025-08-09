@@ -5,11 +5,6 @@ const fetch = require('node-fetch');
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
 const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
 
-// --- CACHE CONFIGURATIE ---
-const cache = new Map();
-// Cache levensduur in milliseconden (4 uur)
-const CACHE_TTL_MS = 4 * 60 * 60 * 1000; 
-
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
@@ -27,27 +22,59 @@ const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vi
 const MAX_REDIRECTS = 5;
 const FAKE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
 
-function extractM3u8Url(htmlContent) {
-    const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
-    const match = htmlContent.match(regex);
-    return match ? match[1] : null;
-}
+// --- PROXY LIJST (gebaseerd op uw voorbeeld) ---
+const PROXIES = [
+    { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true },
+    { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/?', needsEncoding: false },
+    { name: 'Codetabs', template: 'https://api.codetabs.com/v1/proxy?quest=', needsEncoding: true },
+];
 
-function findJsIframeSrc(html) {
-    const combinedRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
-    let match;
-    while ((match = combinedRegex.exec(html)) !== null) {
-        const url = match[1];
-        if (url) { const path = url.split('?')[0].split('#')[0]; if (!path.endsWith('.js')) { return url; } }
+// *** NIEUWE FUNCTIE: Slimme fetch met proxy als fallback ***
+async function fetchWithProxies(targetUrl, options = {}) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 seconden timeout voor directe poging
+
+    // 1. Probeer eerst een directe fetch
+    try {
+        const response = await fetch(targetUrl, { ...options, signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (response.ok) {
+            return response; // Directe fetch was succesvol
+        }
+        // Als de status niet ok is (bv. 403, 429), val door naar proxies.
+        console.log(`Direct fetch failed with status ${response.status}. Trying proxies...`);
+    } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.log('Direct fetch timed out. Trying proxies...');
+        } else {
+            console.log(`Direct fetch failed: ${error.message}. Trying proxies...`);
+        }
     }
-    return null;
+
+    // 2. Als directe fetch faalt, probeer alle proxies parallel
+    const constructProxyUrl = (proxy, url) => {
+        const urlPart = proxy.needsEncoding ? encodeURIComponent(url) : url;
+        return proxy.template + urlPart;
+    };
+    
+    const fetchPromises = PROXIES.map(proxy => {
+        const proxyUrl = constructProxyUrl(proxy, targetUrl);
+        return fetch(proxyUrl, options);
+    });
+
+    try {
+        const firstSuccessfulResponse = await Promise.any(fetchPromises);
+        return firstSuccessfulResponse;
+    } catch (error) {
+        throw new Error(`All proxies failed for ${targetUrl}`);
+    }
 }
 
-function findHtmlIframeSrc(html) {
-    const staticRegex = /<iframe[^>]+src\s*=\s*["']([^"']+)["']/;
-    const match = html.match(staticRegex);
-    return match ? match[1] : null;
-}
+
+function extractM3u8Url(htmlContent) { /* ... ongewijzigd ... */ return (htmlContent.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/) || [])[1] || null; }
+function findJsIframeSrc(html) { /* ... ongewijzigd ... */ const m = html.match(/(?:src:\s*|\.src\s*=\s*)["']((?!.*\.js)[^"']+)["']/); return m ? m[1] : null; }
+function findHtmlIframeSrc(html) { /* ... ongewijzigd ... */ const m = html.match(/<iframe[^>]+src\s*=\s*["']([^"']+)["']/); return m ? m[1] : null; }
 
 function getStreamFromDomain(domain, type, imdbId, season, episode) {
     return new Promise(async (resolve, reject) => {
@@ -60,23 +87,34 @@ function getStreamFromDomain(domain, type, imdbId, season, episode) {
             let currentUrl = initialTarget;
             let previousUrl = null;
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
-                const response = await fetch(currentUrl, {
+                // *** GEBRUIK DE NIEUWE FETCH FUNCTIE ***
+                const response = await fetchWithProxies(currentUrl, {
                     headers: { 'Referer': previousUrl || initialTarget, 'User-Agent': FAKE_USER_AGENT }
                 });
+
                 if (!response.ok) return reject(new Error(`Status ${response.status} op ${domain}`));
+                
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
+
                 if (m3u8Url) {
-                    return resolve({ url: m3u8Url, title: `${domain} (adaptive)` });
+                    return resolve({
+                        url: m3u8Url,
+                        title: `${domain} (adaptive)`
+                    });
                 }
                 const nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
                 if (nextIframeSrc) {
                     previousUrl = currentUrl;
                     currentUrl = new URL(nextIframeSrc, currentUrl).href;
-                } else { break; }
+                } else {
+                    break;
+                }
             }
             reject(new Error(`Geen m3u8 gevonden op ${domain}`));
-        } catch (error) { reject(error); }
+        } catch (error) {
+            reject(error);
+        }
     });
 }
 
@@ -85,10 +123,9 @@ async function findFirstAvailableStream(type, imdbId, season, episode) {
         getStreamFromDomain(domain, type, imdbId, season, episode)
     );
     try {
-        const firstAvailableStream = await Promise.any(promises);
-        return firstAvailableStream;
+        return await Promise.any(promises);
     } catch (error) {
-        console.log("Alle domeinen hebben gefaald:", error.errors.map(e => e.message).join(', '));
+        console.log("Alle domeinen hebben gefaald.");
         return null;
     }
 }
@@ -100,24 +137,10 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (!imdbId) {
         return Promise.resolve({ streams: [] });
     }
-
-    // --- CACHE LOGICA ---
-    const cached = cache.get(id);
-    if (cached && (Date.now() < cached.timestamp + CACHE_TTL_MS)) {
-        console.log(`[CACHE HIT] Stream voor ${id} gevonden in cache.`);
-        return Promise.resolve({ streams: [cached.stream] });
-    }
-
-    console.log(`[CACHE MISS] Geen geldige stream voor ${id} in cache. Nieuwe zoekopdracht...`);
     const stream = await findFirstAvailableStream(type, imdbId, season, episode);
-
     if (stream) {
-        // Voeg de gevonden stream toe aan de cache
-        cache.set(id, { stream: stream, timestamp: Date.now() });
-        console.log(`[CACHE SET] Stream voor ${id} toegevoegd aan cache.`);
         return Promise.resolve({ streams: [stream] });
     }
-
     return Promise.resolve({ streams: [] });
 });
 
