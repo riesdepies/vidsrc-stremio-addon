@@ -33,7 +33,12 @@ function findJsIframeSrc(html) {
     let match;
     while ((match = combinedRegex.exec(html)) !== null) {
         const url = match[1];
-        if (url) { const path = url.split('?')[0].split('#')[0]; if (!path.endsWith('.js')) { return url; } }
+        if (url) {
+            const path = url.split('?')[0].split('#')[0];
+            if (!path.endsWith('.js')) {
+                return url;
+            }
+        }
     }
     return null;
 }
@@ -44,73 +49,49 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// *** NIEUWE HELPER FUNCTIE: Probeert een stream van ÉÉN domein te krijgen ***
-// Geeft een Promise terug die resolveert met een stream object of rejecteert bij een fout.
-function getStreamFromDomain(domain, type, imdbId, season, episode) {
-    return new Promise(async (resolve, reject) => {
+// *** FUNCTIE VEREENVOUDIGD: ZOEKT ALLEEN DE MASTER M3U8 URL EN HET DOMEIN ***
+async function getVidSrcMasterUrl(type, imdbId, season, episode) {
+    const apiType = type === 'series' ? 'tv' : 'movie';
+    for (const domain of VIDSRC_DOMAINS) {
         try {
-            const apiType = type === 'series' ? 'tv' : 'movie';
             let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
             if (type === 'series' && season && episode) {
                 initialTarget += `/${season}-${episode}`;
             }
-
             let currentUrl = initialTarget;
             let previousUrl = null;
 
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
                 const response = await fetch(currentUrl, {
-                    headers: { 'Referer': previousUrl || initialTarget, 'User-Agent': FAKE_USER_AGENT }
+                    headers: {
+                        'Referer': previousUrl || initialTarget,
+                        'User-Agent': FAKE_USER_AGENT
+                    }
                 });
-                if (!response.ok) {
-                    return reject(new Error(`Status ${response.status} op ${domain}`));
-                }
+                if (!response.ok) break;
 
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
 
                 if (m3u8Url) {
-                    // Succes! Resolveer de promise met het stream object.
-                    return resolve({
-                        url: m3u8Url,
-                        title: `${domain} (adaptive)`
-                    });
+                    // Gevonden! Geef de master URL en het domein terug en stop.
+                    return { masterUrl: m3u8Url, sourceDomain: domain };
                 }
 
-                const nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
+                let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
                 if (nextIframeSrc) {
                     previousUrl = currentUrl;
                     currentUrl = new URL(nextIframeSrc, currentUrl).href;
                 } else {
-                    break; // Geen volgende stap gevonden, dit domein faalt.
+                    break;
                 }
             }
-            // Als de loop eindigt zonder resultaat, reject de promise.
-            reject(new Error(`Geen m3u8 gevonden op ${domain}`));
         } catch (error) {
-            reject(error); // Reject bij een netwerkfout of andere error.
+            console.error(`[ERROR] Fout bij verwerken van domein ${domain}:`, error.message);
         }
-    });
-}
-
-// *** NIEUWE HOOFDFUNCTIE: Gebruikt Promise.any om de snelste te vinden ***
-async function findFirstAvailableStream(type, imdbId, season, episode) {
-    // Maak een array van promises, één voor elk domein.
-    const promises = VIDSRC_DOMAINS.map(domain =>
-        getStreamFromDomain(domain, type, imdbId, season, episode)
-    );
-
-    try {
-        // Wacht op de ALLEREERSTE promise die succesvol is.
-        const firstAvailableStream = await Promise.any(promises);
-        return firstAvailableStream;
-    } catch (error) {
-        // Dit blok wordt alleen bereikt als ALLE promises falen.
-        console.log("Alle domeinen hebben gefaald:", error.errors.map(e => e.message).join(', '));
-        return null;
     }
+    return null; // Geen stream gevonden
 }
-
 
 const builder = new addonBuilder(manifest);
 
@@ -120,10 +101,15 @@ builder.defineStreamHandler(async ({ type, id }) => {
         return Promise.resolve({ streams: [] });
     }
 
-    // Roep de nieuwe functie aan die de snelste bron zoekt.
-    const stream = await findFirstAvailableStream(type, imdbId, season, episode);
+    // Ontvang het object met de master URL en het domein
+    const sourceInfo = await getVidSrcMasterUrl(type, imdbId, season, episode);
 
-    if (stream) {
+    if (sourceInfo) {
+        // Bouw het stream object met de master URL en de gewenste titel
+        const stream = {
+            url: sourceInfo.masterUrl,
+            title: `${sourceInfo.sourceDomain} (adaptive)`
+        };
         return Promise.resolve({ streams: [stream] });
     }
 
