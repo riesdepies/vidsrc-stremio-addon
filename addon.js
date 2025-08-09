@@ -22,13 +22,16 @@ const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vi
 const MAX_REDIRECTS = 5;
 const FAKE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
 
+// *** AANGEPAST: De volledige lijst met 8 proxies ***
 const CORS_PROXIES = [
     { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true },
     { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/', needsEncoding: false },
     { name: 'Codetabs', template: 'https://api.codetabs.com/v1/proxy?quest=', needsEncoding: true },
     { name: 'corsmirror.com', template: 'https://corsmirror.com/v1?url=', needsEncoding: true },
     { name: 'Whatever Origin', template: 'https://whateverorigin.org/get?url=', needsEncoding: true },
-    { name: 'Tuananh Worker', template: 'https://cors-proxy.tuananh.workers.dev/?', needsEncoding: false }
+    { name: 'Tuananh Worker', template: 'https://cors-proxy.tuananh.workers.dev/?', needsEncoding: false },
+    { name: 'Novadrone Worker', template: 'https://cors-proxy.novadrone16.workers.dev?url=', needsEncoding: true },
+    { name: 'My CORS Proxy', template: 'https://my-cors-proxy-kappa.vercel.app/api/proxy?url=', needsEncoding: true }
 ];
 
 function extractM3u8Url(html) { const m = html.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/); return m ? m[1] : null; }
