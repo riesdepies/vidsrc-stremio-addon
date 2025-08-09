@@ -7,8 +7,8 @@ const manifest = {
     "version": "1.1.0",
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
-    "icon": "/logo.png",
-    "catalogs": [], // <-- DEZE REGEL IS HERSTELD
+    "icon": "/icon.svg", // <-- DEZE REGEL IS AANGEPAST
+    "catalogs": [],
     "resources": ["stream"],
     "types": ["movie", "series"],
     "idPrefixes": ["tt"]
