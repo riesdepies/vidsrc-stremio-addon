@@ -8,7 +8,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.2.1", // Versie verhoogd
+    "version": "1.2.2", // Versie verhoogd
     "name": "Nepflix",
     "description": "HLS streams van VidSrc met uitgebreide proxy fallback.",
     "icon": iconUrl,
@@ -31,7 +31,6 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-// --- AANGEPAST: UITGEBREIDE PROXY LIJST ---
 const PROXIES = [
     { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true },
     { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/', needsEncoding: false },
@@ -43,11 +42,6 @@ const PROXIES = [
     { name: 'My CORS Proxy', template: 'https://my-cors-proxy-kappa.vercel.app/api/proxy?url=', needsEncoding: true }
 ];
 
-
-/**
- * Fetches a URL via a series of CORS proxies, returning the first successful response.
- * Gebruikt Promise.any om parallel te proberen.
- */
 async function fetchViaCorsProxy(targetUrl, options = {}) {
     const constructProxyUrl = (proxy, url) => {
         const urlPart = proxy.needsEncoding ? encodeURIComponent(url) : url;
@@ -81,7 +75,8 @@ async function fetchViaCorsProxy(targetUrl, options = {}) {
 }
 
 /**
- * Probeert eerst een directe fetch. Als dat faalt, gebruikt het de proxy fallback.
+ * AANGEPAST: Geeft nu een object terug met de response en of een proxy is gebruikt.
+ * @returns {Promise<{response: Response, usedProxy: boolean}>}
  */
 async function fetchWithProxyFallback(url, options = {}) {
     try {
@@ -90,10 +85,11 @@ async function fetchWithProxyFallback(url, options = {}) {
             throw new Error(`Direct fetch failed with status: ${directResponse.status}`);
         }
         console.log(`[DIRECT SUCCESS] Fetched directly: ${url}`);
-        return directResponse;
+        return { response: directResponse, usedProxy: false };
     } catch (directError) {
         console.warn(`[DIRECT FAIL] ${directError.message}. Falling back to proxies for ${url}`);
-        return fetchViaCorsProxy(url, options);
+        const proxyResponse = await fetchViaCorsProxy(url, options);
+        return { response: proxyResponse, usedProxy: true };
     }
 }
 
@@ -126,9 +122,13 @@ function findHtmlIframeSrc(html) {
 
 // --- HOOFDLOGICA ---
 
+/**
+ * AANGEPAST: Geeft nu ook terug of een proxy is gebruikt in de keten.
+ */
 async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     for (const domain of VIDSRC_DOMAINS) {
+        let proxyWasUsedInChain = false; // Vlag om proxygebruik bij te houden per domein
         try {
             let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
             if (type === 'series' && season && episode) {
@@ -140,19 +140,20 @@ async function getVidSrcStream(type, imdbId, season, episode) {
             for (let step = 1; step <= MAX_REDIRECTS; step++) {
                 console.log(`[STEP ${step}] Fetching from ${currentUrl} (Domain: ${domain})`);
                 
-                const response = await fetchWithProxyFallback(currentUrl, {
-                    headers: {
-                        ...COMMON_HEADERS,
-                        'Referer': previousUrl || initialTarget,
-                    }
+                const { response, usedProxy } = await fetchWithProxyFallback(currentUrl, {
+                    headers: { ...COMMON_HEADERS, 'Referer': previousUrl || initialTarget, }
                 });
+                
+                if (usedProxy) {
+                    proxyWasUsedInChain = true; // Zet de vlag als een proxy ooit is gebruikt
+                }
 
                 const html = await response.text();
                 const m3u8Url = extractM3u8Url(html);
 
                 if (m3u8Url) {
                     console.log(`[M3U8 FOUND] Found stream on ${domain}`);
-                    return { masterUrl: m3u8Url, sourceDomain: domain };
+                    return { masterUrl: m3u8Url, sourceDomain: domain, wasProxied: proxyWasUsedInChain };
                 }
 
                 let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
@@ -184,9 +185,15 @@ builder.defineStreamHandler(async ({ type, id }) => {
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
     if (streamSource) {
+        // AANGEPAST: Bouw de titel op basis van of een proxy is gebruikt.
+        let streamTitle = `Nepflix - ${streamSource.sourceDomain}`;
+        if (streamSource.wasProxied) {
+            streamTitle += ' (via Proxy)';
+        }
+
         const stream = {
             url: streamSource.masterUrl,
-            title: `Nepflix - ${streamSource.sourceDomain}`
+            title: streamTitle
         };
         return Promise.resolve({ streams: [stream] });
     }
