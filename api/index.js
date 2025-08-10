@@ -9,6 +9,11 @@ module.exports = (req, res) => {
     res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
 
+    // Voeg Caching header toe.
+    // s-maxage=21600: Cache 6 uur op de CDN (Vercel Edge).
+    // stale-while-revalidate=3600: Serveer oude cache voor 1 uur terwijl op de achtergrond een nieuwe wordt gehaald.
+    res.setHeader('Cache-Control', 'public, s-maxage=21600, stale-while-revalidate=3600');
+
     // Stuur alle requests door naar de addon router
     router(req, res, () => {
         res.statusCode = 404;
