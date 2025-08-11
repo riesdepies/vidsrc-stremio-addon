@@ -1,3 +1,5 @@
+// addon.js
+
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
 
@@ -10,7 +12,7 @@ const manifest = {
     "id": "community.nepflix.ries",
     "version": "1.4.1", // Versie verhoogd
     "name": "Nepflix",
-    "description": "HLS streams van VidSrc na een handmatige zoekopdracht.", // Beschrijving aangepast
+    "description": "HLS streams van VidSrc",
     "icon": iconUrl,
     "catalogs": [],
     "resources": ["stream"],
@@ -18,9 +20,11 @@ const manifest = {
     "idPrefixes": ["tt"]
 };
 
+// --- CONSTANTEN ---
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
+const SEARCH_PREFIX = 'search:'; // Voorvoegsel voor de zoekactie
 
 const COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
@@ -35,10 +39,7 @@ const COMMON_HEADERS = {
 
 // --- AANGEPASTE PROXY FETCH FUNCTIE ---
 async function fetchViaProxy(url, options) {
-    const proxyUrl = host.startsWith('http')
-        ? `${host}/api/proxy`
-        : `https://${host}/api/proxy`;
-
+    const proxyUrl = host.startsWith('http') ? `${host}/api/proxy` : `https://${host}/api/proxy`;
     try {
         const proxyRes = await fetch(proxyUrl, {
             method: 'POST',
@@ -49,17 +50,13 @@ async function fetchViaProxy(url, options) {
             }),
             signal: options.signal
         });
-
         if (!proxyRes.ok) {
             throw new Error(`Proxy-aanroep mislukt met status: ${proxyRes.status}`);
         }
-
         const data = await proxyRes.json();
-
         if (data.error) {
             throw new Error(data.details || data.error);
         }
-
         return {
             ok: data.status >= 200 && data.status < 300,
             status: data.status,
@@ -107,15 +104,12 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     if (apiType === 'tv' && season && episode) {
         initialTarget += `/${season}-${episode}`;
     }
-
     let currentUrl = initialTarget;
     let previousUrl = null;
-
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
         if (signal.aborted) return null;
         if (visitedUrls.has(currentUrl)) return null;
         visitedUrls.add(currentUrl);
-
         try {
             const response = await fetchViaProxy(currentUrl, {
                 signal,
@@ -125,20 +119,16 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
                 }
             });
             if (!response.ok) break;
-
             const html = await response.text();
-
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
                 controller.abort();
                 return null;
             }
-
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
                 controller.abort();
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
-
             let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
@@ -146,7 +136,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             } else {
                 break;
             }
-
         } catch (error) {
             if (error.name !== 'AbortError') {
                 console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
@@ -162,17 +151,14 @@ function getVidSrcStream(type, imdbId, season, episode) {
     const controller = new AbortController();
     const visitedUrls = new Set();
     const MAX_CONCURRENT_SEARCHES = 3;
-
     const domainQueue = [...VIDSRC_DOMAINS];
     for (let i = domainQueue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
-
     return new Promise(resolve => {
         let activeSearches = 0;
         let resultFound = false;
-
         const launchNext = () => {
             if (resultFound || domainQueue.length === 0) {
                 if (activeSearches === 0 && !resultFound) {
@@ -180,10 +166,8 @@ function getVidSrcStream(type, imdbId, season, episode) {
                 }
                 return;
             }
-
             activeSearches++;
             const domain = domainQueue.shift();
-
             searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
                 .then(result => {
                     activeSearches--;
@@ -204,40 +188,40 @@ function getVidSrcStream(type, imdbId, season, episode) {
 const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
-    // We voegen een uniek achtervoegsel toe om zoekopdrachten te onderscheiden
-    const isSearchRequest = id.endsWith(':search');
-    const realId = isSearchRequest ? id.replace(':search', '') : id;
+    // Controleer of de aanvraag voor een daadwerkelijke zoekopdracht is
+    if (id.startsWith(SEARCH_PREFIX)) {
+        // Dit wordt uitgevoerd NADAT de gebruiker op de "Zoek" knop heeft geklikt
+        const realId = id.substring(SEARCH_PREFIX.length);
+        const [imdbId, season, episode] = realId.split(':');
 
-    const [imdbId, season, episode] = realId.split(':');
+        if (!imdbId) {
+            return Promise.resolve({ streams: [] });
+        }
 
-    if (!imdbId) {
-        return Promise.resolve({ streams: [] });
-    }
-
-    // Als dit een zoekverzoek is (vanuit de knop), voer dan de scrape-logica uit.
-    if (isSearchRequest) {
         const streamSource = await getVidSrcStream(type, imdbId, season, episode);
+
         if (streamSource) {
             const stream = {
                 url: streamSource.masterUrl,
-                title: `✅ Gevonden op ${streamSource.sourceDomain}\nKlik om af te spelen`
+                title: `VidSrc - ${streamSource.sourceDomain}` // Duidelijkere titel
             };
+            // Deze respons (met http-url) wordt gecached door de Vercel-logica in api/index.js
             return Promise.resolve({ streams: [stream] });
         }
-        // Als er niets wordt gevonden, retourneer een lege array.
-        return Promise.resolve({ streams: [] });
     } else {
-        // Dit is het eerste verzoek. Toon een "Zoek" knop.
-        // We gebruiken 'externalUrl' om Stremio terug te laten linken naar de addon,
-        // maar nu met de ':search' ID.
+        // Dit is de EERSTE aanvraag. We tonen een "knop" om te zoeken.
         const searchStream = {
             name: "Nepflix",
             title: "Zoek naar streams",
-            description: "Klik hier om het zoeken naar beschikbare streams te starten",
-            externalUrl: `stremio:///stream/${type}/${id}:search`
+            // De URL verwijst terug naar de addon, maar met de zoek-prefix
+            url: `stremio://${manifest.id}/stream/${type}/${SEARCH_PREFIX}${id}`
         };
+        // Deze respons (met stremio:// url) wordt NIET gecached door de logica in api/index.js
         return Promise.resolve({ streams: [searchStream] });
     }
+
+    // Als er geen stream is gevonden na het zoeken, retourneer een lege array
+    return Promise.resolve({ streams: [] });
 });
 
 module.exports = builder.getInterface();
