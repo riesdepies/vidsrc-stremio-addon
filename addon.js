@@ -8,7 +8,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.2.0", // Versie verhoogd vanwege significante wijziging
+    "version": "1.3.0", // Versie verhoogd
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -20,6 +20,7 @@ const manifest = {
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
+const STAGGER_DELAY_MS = 100; // Vertraging tussen de start van elke domein-zoektocht
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
 const COMMON_HEADERS = {
@@ -60,7 +61,16 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// --- NIEUWE PARALLELLE ZOEKFUNCTIE ---
+// --- TOEGEVOEGD: Helper-functie om een array willekeurig te schudden (Fisher-Yates shuffle) ---
+function shuffleArray(array) {
+  let currentIndex = array.length, randomIndex;
+  while (currentIndex !== 0) {
+    randomIndex = Math.floor(Math.random() * currentIndex);
+    currentIndex--;
+    [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
+  }
+  return array;
+}
 
 // Helper-functie die het zoekproces voor één enkel domein uitvoert.
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
@@ -74,16 +84,14 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     let previousUrl = null;
 
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        // Stop als een ander proces al klaar is of een fatale fout vond.
         if (signal.aborted) return null;
 
-        // Voorkom dubbel werk als een andere zoektocht deze URL al bezoekt.
         if (visitedUrls.has(currentUrl)) return null;
         visitedUrls.add(currentUrl);
 
         try {
             const response = await fetch(currentUrl, {
-                signal, // Koppel het abort-signaal aan de fetch
+                signal,
                 headers: {
                     ...COMMON_HEADERS,
                     'Referer': previousUrl || initialTarget,
@@ -93,7 +101,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             const html = await response.text();
             
-            // Fatale fout: media is nergens beschikbaar. Aborteer alles.
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
                 controller.abort();
                 return null;
@@ -101,7 +108,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
-                // Succes! Aborteer alle andere zoekprocessen.
                 controller.abort();
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
@@ -111,43 +117,50 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
                 previousUrl = currentUrl;
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
             } else {
-                break; // Doodlopend spoor voor dit domein.
+                break;
             }
-
         } catch (error) {
             if (error.name !== 'AbortError') {
                 console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
             }
-            break; // Stop bij een fout.
+            break;
         }
     }
-    return null; // Geen stream gevonden via dit domein.
+    return null;
 }
 
 // Orchestrator-functie die de parallelle race beheert.
 async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
-    const visitedUrls = new Set(); // Gedeelde set om dubbel werk te voorkomen.
+    const visitedUrls = new Set();
+    
+    // --- AANGEPAST: Domeinen schudden en vertraagd starten ---
+    const shuffledDomains = shuffleArray([...VIDSRC_DOMAINS]);
 
-    // Start een zoekproces voor elk domein en voeg de promise toe aan een array.
-    const searchPromises = VIDSRC_DOMAINS.map(domain =>
-        searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
-    );
+    const searchPromises = shuffledDomains.map((domain, index) => {
+        // Creëer een promise die eerst wacht en dan de zoekactie start.
+        return new Promise(resolve => setTimeout(resolve, index * STAGGER_DELAY_MS))
+            .then(() => {
+                // Als de race al voorbij is voordat we starten, doe dan niets.
+                if (controller.signal.aborted) {
+                    return null;
+                }
+                // Start de daadwerkelijke zoekactie voor dit domein.
+                return searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls);
+            });
+    });
 
-    // Wacht tot alle promises zijn afgerond (resolved of rejected).
     const results = await Promise.allSettled(searchPromises);
 
-    // Zoek naar het eerste succesvolle resultaat in de afgeronde promises.
     for (const result of results) {
         if (result.status === 'fulfilled' && result.value) {
-            return result.value; // Dit is het winnende resultaat.
+            return result.value;
         }
     }
 
-    return null; // Geen enkel proces heeft een stream gevonden.
+    return null;
 }
-
 
 const builder = new addonBuilder(manifest);
 
