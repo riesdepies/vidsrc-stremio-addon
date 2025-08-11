@@ -1,6 +1,6 @@
 // /api/proxy.js
 
-const fetch = require('node-fetch');
+const p = require('phin');
 
 // Helper-functie om de JSON-body van een request te parsen
 async function parseJsonBody(req) {
@@ -47,27 +47,30 @@ module.exports = async (req, res) => {
         if (!targetUrl) {
             return res.status(400).json({ error: 'Bad Request: targetUrl is required' });
         }
-        
-        // Voer het daadwerkelijke fetch-verzoek uit namens de addon
-        const response = await fetch(targetUrl, {
+
+        // Voer het daadwerkelijke phin-verzoek uit namens de addon
+        const response = await p({
+            url: targetUrl,
+            method: 'GET', // Aanname dat de proxy altijd GET-requests doet
             headers: headers,
-            signal: AbortSignal.timeout(15000) 
+            timeout: 15000 // Vervangt AbortSignal.timeout
         });
 
-        const body = await response.text();
+        // phin's body is een Buffer, dus converteer naar string
+        const body = response.body.toString('utf-8');
 
         // Stuur de status en de body van de doelwebsite terug naar de addon
         res.status(200).json({
-            status: response.status,
-            statusText: response.statusText,
+            status: response.statusCode,
+            statusText: response.statusMessage,
             body: body
         });
 
     } catch (error) {
         console.error(`[PROXY ERROR] Fout bij verwerken proxy request:`, error.message);
-        res.status(500).json({ 
-            error: 'Proxy request failed', 
-            details: error.message 
+        res.status(500).json({
+            error: 'Proxy request failed',
+            details: error.message
         });
     }
 };
