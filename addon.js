@@ -8,7 +8,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.3.0", // Versie verhoogd
+    "version": "1.3.1", // Versie verhoogd
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -20,7 +20,7 @@ const manifest = {
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
-const STAGGER_DELAY_MS = 100; // Vertraging tussen de start van elke domein-zoektocht
+const STAGGER_DELAY_MS = 500; // AANGEPAST: Vertraging tussen de start van elke domein-zoektocht
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
 const COMMON_HEADERS = {
@@ -61,7 +61,7 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// --- TOEGEVOEGD: Helper-functie om een array willekeurig te schudden (Fisher-Yates shuffle) ---
+// Helper-functie om een array willekeurig te schudden (Fisher-Yates shuffle)
 function shuffleArray(array) {
   let currentIndex = array.length, randomIndex;
   while (currentIndex !== 0) {
@@ -135,18 +135,14 @@ async function getVidSrcStream(type, imdbId, season, episode) {
     const controller = new AbortController();
     const visitedUrls = new Set();
     
-    // --- AANGEPAST: Domeinen schudden en vertraagd starten ---
     const shuffledDomains = shuffleArray([...VIDSRC_DOMAINS]);
 
     const searchPromises = shuffledDomains.map((domain, index) => {
-        // Creëer een promise die eerst wacht en dan de zoekactie start.
         return new Promise(resolve => setTimeout(resolve, index * STAGGER_DELAY_MS))
             .then(() => {
-                // Als de race al voorbij is voordat we starten, doe dan niets.
                 if (controller.signal.aborted) {
                     return null;
                 }
-                // Start de daadwerkelijke zoekactie voor dit domein.
                 return searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls);
             });
     });
