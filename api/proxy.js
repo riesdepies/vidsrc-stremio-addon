@@ -1,7 +1,5 @@
 // /api/proxy.js
 
-const p = require('phin');
-
 // Helper-functie om de JSON-body van een request te parsen
 async function parseJsonBody(req) {
     return new Promise((resolve, reject) => {
@@ -11,12 +9,7 @@ async function parseJsonBody(req) {
         });
         req.on('end', () => {
             try {
-                // Voorkom parsen van een lege body
-                if (body) {
-                    resolve(JSON.parse(body));
-                } else {
-                    resolve({});
-                }
+                resolve(JSON.parse(body));
             } catch (e) {
                 reject(e);
             }
@@ -53,27 +46,24 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'Bad Request: targetUrl is required' });
         }
 
-        // Voer het daadwerkelijke phin-verzoek uit namens de addon
-        const response = await p({
-            url: targetUrl,
-            method: 'GET',
+        // Voer het daadwerkelijke fetch-verzoek uit namens de addon
+        // Gebruikt de native fetch van Node.js 18+
+        const response = await fetch(targetUrl, {
             headers: headers,
-            timeout: 15000,
-            followRedirects: true // <-- DE BELANGRIJKE TOEVOEGING
+            signal: AbortSignal.timeout(15000)
         });
 
-        // phin's body is een Buffer, dus converteer naar string
-        const body = response.body.toString('utf-8');
+        const body = await response.text();
 
         // Stuur de status en de body van de doelwebsite terug naar de addon
         res.status(200).json({
-            status: response.statusCode,
-            statusText: response.statusMessage,
+            status: response.status,
+            statusText: response.statusText,
             body: body
         });
 
     } catch (error) {
-        console.error(`[PROXY ERROR] Fout bij verwerken proxy request naar ${req.body ? req.body.targetUrl : 'onbekend'}:`, error.message);
+        console.error(`[PROXY ERROR] Fout bij verwerken proxy request:`, error.message);
         res.status(500).json({
             error: 'Proxy request failed',
             details: error.message
