@@ -5,17 +5,20 @@ module.exports = async (req, res) => {
     const targetUrl = req.query.url;
 
     if (!targetUrl) {
-        return res.status(400).json({ error: 'URL parameter is missing' });
+        res.status(400).json({ error: 'URL parameter is missing' });
+        return;
     }
 
     try {
-        // Stuur de headers van de oorspronkelijke aanvraag door.
+        // Gebruik de headers van de oorspronkelijke aanvraag,
+        // met name 'User-Agent' en 'Referer' zijn belangrijk.
         const response = await fetch(targetUrl, {
             headers: req.headers,
         });
 
         // Stuur de headers van het doel door naar de client.
         response.headers.forEach((value, name) => {
+            // Voorkom 'hop-by-hop' header fouten.
             if (!['content-encoding', 'transfer-encoding', 'connection'].includes(name.toLowerCase())) {
                 res.setHeader(name, value);
             }
