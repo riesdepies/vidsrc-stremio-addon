@@ -10,7 +10,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.0",
+    "version": "1.5.0", // Versie verhoogd
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -36,9 +36,7 @@ const COMMON_HEADERS = {
 };
 
 // --- AANGEPASTE PROXY FETCH FUNCTIE ---
-// Deze functie roept onze eigen /api/proxy endpoint aan met de juiste URL.
 async function fetchViaProxy(url, options) {
-    // Bouw de volledige URL naar de proxy, inclusief protocol.
     const proxyUrl = host.startsWith('http') 
         ? `${host}/api/proxy` 
         : `https://${host}/api/proxy`;
@@ -78,7 +76,6 @@ async function fetchViaProxy(url, options) {
     }
 }
 
-
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
     const match = htmlContent.match(regex);
@@ -106,6 +103,7 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
+// --- AANGEPAST: searchDomain geeft nu een speciaal object terug bij "unavailable" ---
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
@@ -133,9 +131,11 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             const html = await response.text();
             
+            // --- AANGEPASTE LOGICA ---
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
                 controller.abort();
-                return null;
+                // Geef een specifiek signaal terug in plaats van null
+                return { unavailable: true };
             }
 
             const m3u8Url = extractM3u8Url(html);
@@ -162,6 +162,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     return null;
 }
 
+// --- AANGEPAST: getVidSrcStream geeft het "unavailable" signaal door ---
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
@@ -176,12 +177,12 @@ function getVidSrcStream(type, imdbId, season, episode) {
     
     return new Promise(resolve => {
         let activeSearches = 0;
-        let resultFound = false;
+        let finalStateReached = false;
 
         const launchNext = () => {
-            if (resultFound || domainQueue.length === 0) {
-                if (activeSearches === 0 && !resultFound) {
-                    resolve(null);
+            if (finalStateReached || domainQueue.length === 0) {
+                if (activeSearches === 0 && !finalStateReached) {
+                    resolve(null); // Alles geprobeerd, niets gevonden
                 }
                 return;
             }
@@ -192,10 +193,13 @@ function getVidSrcStream(type, imdbId, season, episode) {
             searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
                 .then(result => {
                     activeSearches--;
-                    if (result && !resultFound) {
-                        resultFound = true;
-                        resolve(result);
-                    } else {
+
+                    // Als een definitief resultaat is gevonden (stream of 'unavailable')
+                    if (result && !finalStateReached) {
+                        finalStateReached = true;
+                        resolve(result); // Geef resultaat door (stream obj of unavailable obj)
+                    } else if (!finalStateReached) {
+                        // Zoekopdracht mislukt, start de volgende
                         launchNext();
                     }
                 });
@@ -209,6 +213,7 @@ function getVidSrcStream(type, imdbId, season, episode) {
 
 const builder = new addonBuilder(manifest);
 
+// --- AANGEPAST: defineStreamHandler behandelt nu 3 mogelijke uitkomsten ---
 builder.defineStreamHandler(async ({ type, id }) => {
     const [imdbId, season, episode] = id.split(':');
     if (!imdbId) {
@@ -217,7 +222,8 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
-    if (streamSource) {
+    // Scenario 1: Stream gevonden
+    if (streamSource && streamSource.masterUrl) {
         const stream = {
             url: streamSource.masterUrl,
             title: streamSource.sourceDomain
@@ -225,7 +231,23 @@ builder.defineStreamHandler(async ({ type, id }) => {
         return Promise.resolve({ streams: [stream] });
     }
 
-    return Promise.resolve({ streams: [] });
+    // Scenario 2: Media is permanent niet beschikbaar
+    if (streamSource && streamSource.unavailable) {
+        // Geef een lege lijst terug, geen "Retry"-optie.
+        return Promise.resolve({ streams: [] });
+    }
+
+    // Scenario 3: Niets gevonden, maar niet permanent. Toon "Retry".
+    // Dit wordt bereikt als streamSource 'null' is.
+    const retryStream = {
+        name: "Nepflix",
+        title: "❌ Geen bron gevonden\nKlik om opnieuw te proberen",
+        url: `stremio://${manifest.id}/stream/${type}/${id}`,
+        behaviorHints: {
+            notWebReady: true
+        }
+    };
+    return Promise.resolve({ streams: [retryStream] });
 });
 
 module.exports = builder.getInterface();
