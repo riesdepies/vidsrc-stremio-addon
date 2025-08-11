@@ -8,7 +8,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.3.0", // Versie verhoogd vanwege significante wijziging
+    "version": "1.4.0", // Versie verhoogd vanwege significante wijziging
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -118,47 +118,60 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 }
 
 // --- AANGEPASTE ORCHESTRATOR-FUNCTIE ---
-// Orchestrator-functie die de parallelle race beheert met een gespreide, willekeurige start.
-async function getVidSrcStream(type, imdbId, season, episode) {
+// Beheert een "worker pool" van maximaal 3 parallelle zoekopdrachten.
+function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
     const visitedUrls = new Set();
-    const searchPromises = [];
-    const STAGGER_DELAY_MS = 200;
+    const MAX_CONCURRENT_SEARCHES = 3;
 
-    // Stap 1: Maak een willekeurige kopie van de domeinlijst (Fisher-Yates shuffle)
-    const shuffledDomains = [...VIDSRC_DOMAINS];
-    for (let i = shuffledDomains.length - 1; i > 0; i--) {
+    // Stap 1: Maak een willekeurige wachtrij van domeinen
+    const domainQueue = [...VIDSRC_DOMAINS];
+    for (let i = domainQueue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        [shuffledDomains[i], shuffledDomains[j]] = [shuffledDomains[j], shuffledDomains[i]];
+        [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
+    
+    // We gebruiken een Promise om het uiteindelijke resultaat af te handelen.
+    return new Promise(resolve => {
+        let activeSearches = 0;
+        let resultFound = false;
 
-    // Stap 2: Start de zoekprocessen met een vertraging
-    for (const domain of shuffledDomains) {
-        // Stop met het starten van nieuwe zoektochten als het resultaat al is gevonden
-        if (controller.signal.aborted) {
-            break;
+        // Functie die een nieuwe zoekopdracht start.
+        const launchNext = () => {
+            // Stop als resultaat al gevonden is of de wachtrij leeg is.
+            if (resultFound || domainQueue.length === 0) {
+                // Als er geen actieve zoekopdrachten meer zijn en de wachtrij leeg is,
+                // betekent dit dat alles is geprobeerd en niets is gevonden.
+                if (activeSearches === 0 && !resultFound) {
+                    resolve(null);
+                }
+                return;
+            }
+
+            activeSearches++;
+            const domain = domainQueue.shift(); // Pak het volgende domein uit de wachtrij.
+
+            searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
+                .then(result => {
+                    activeSearches--;
+
+                    // Als dit de winnende zoekopdracht is, sla het resultaat op.
+                    if (result && !resultFound) {
+                        resultFound = true;
+                        resolve(result); // Dit stopt de hele operatie.
+                    } else {
+                        // Deze zoekopdracht is klaar, start de volgende uit de wachtrij.
+                        launchNext();
+                    }
+                });
+        };
+
+        // Stap 2: Start de initiële workers om de pool te vullen.
+        for (let i = 0; i < MAX_CONCURRENT_SEARCHES; i++) {
+            launchNext();
         }
-
-        // Start het zoekproces voor dit domein en voeg de promise toe aan de lijst
-        const promise = searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls);
-        searchPromises.push(promise);
-        
-        // Wacht een korte periode voordat de volgende zoektocht wordt gestart
-        await new Promise(resolve => setTimeout(resolve, STAGGER_DELAY_MS));
-    }
-
-    // Stap 3: Wacht tot alle gestarte zoektochten zijn afgerond
-    const results = await Promise.allSettled(searchPromises);
-
-    // Stap 4: Zoek naar het eerste succesvolle resultaat
-    for (const result of results) {
-        if (result.status === 'fulfilled' && result.value) {
-            return result.value; // Dit is het winnende resultaat.
-        }
-    }
-
-    return null; // Geen enkel proces heeft een stream gevonden.
+    });
 }
 
 
