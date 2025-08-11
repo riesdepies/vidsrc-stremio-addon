@@ -1,8 +1,7 @@
 // /api/proxy.js
 
-const axios = require('axios'); // Vervang fetch door axios
+const fetch = require('node-fetch');
 
-// Helper-functie om de JSON-body van een request te parsen
 async function parseJsonBody(req) {
     return new Promise((resolve, reject) => {
         let body = '';
@@ -22,9 +21,7 @@ async function parseJsonBody(req) {
     });
 }
 
-// Exporteer de serverless functie
 module.exports = async (req, res) => {
-    // Stel CORS headers in voor alle responses
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -44,21 +41,17 @@ module.exports = async (req, res) => {
             return res.status(400).json({ error: 'Bad Request: targetUrl is required' });
         }
         
-        // Voer het daadwerkelijke verzoek uit met axios
-        const response = await axios.get(targetUrl, {
+        const response = await fetch(targetUrl, {
             headers: headers,
-            timeout: 15000,
-            // Belangrijk: zorg ervoor dat we de rauwe tekst body krijgen
-            responseType: 'text',
-            // Belangrijk: voorkom dat axios een error gooit bij 4xx/5xx status codes
-            validateStatus: () => true 
+            signal: AbortSignal.timeout(15000) 
         });
 
-        // Stuur de status en de body van de doelwebsite terug naar de addon
+        const body = await response.text();
+
         res.status(200).json({
             status: response.status,
             statusText: response.statusText,
-            body: response.data // Bij responseType: 'text', is 'data' de tekstuele body
+            body: body
         });
 
     } catch (error) {
