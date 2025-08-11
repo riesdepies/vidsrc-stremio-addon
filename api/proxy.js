@@ -41,26 +41,34 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // Parse de body van het POST-verzoek
-        const { targetUrl, headers } = await parseJsonBody(req);
+        // Parse de body van het POST-verzoek, inclusief de optionele cookie
+        const { targetUrl, headers, cookie } = await parseJsonBody(req);
 
         if (!targetUrl) {
             return res.status(400).json({ error: 'Bad Request: targetUrl is required' });
         }
         
+        const requestHeaders = { ...headers };
+        if (cookie) {
+            requestHeaders['Cookie'] = cookie;
+        }
+
         // Voer het daadwerkelijke fetch-verzoek uit namens de addon
         const response = await fetch(targetUrl, {
-            headers: headers,
+            headers: requestHeaders,
             signal: AbortSignal.timeout(15000) 
         });
 
         const body = await response.text();
+        // Vang de Set-Cookie headers op
+        const setCookieHeader = response.headers.raw()['set-cookie'];
 
-        // Stuur de status en de body van de doelwebsite terug naar de addon
+        // Stuur de status, body en cookies van de doelwebsite terug naar de addon
         res.status(200).json({
             status: response.status,
             statusText: response.statusText,
-            body: body
+            body: body,
+            setCookie: setCookieHeader || null
         });
 
     } catch (error) {
