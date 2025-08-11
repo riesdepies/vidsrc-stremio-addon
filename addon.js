@@ -1,5 +1,7 @@
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
+const http = require('http'); // <-- Nieuw: import http module
+const https = require('https'); // <-- Nieuw: import https module
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
@@ -8,7 +10,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.1", // Versie verhoogd vanwege bugfix
+    "version": "1.4.2", // Versie verhoogd vanwege stabiliteitsfix
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -17,6 +19,10 @@ const manifest = {
     "types": ["movie", "series"],
     "idPrefixes": ["tt"]
 };
+
+// --- NIEUW: Agents voor het uitschakelen van connection pooling ---
+const httpAgent = new http.Agent({ keepAlive: false });
+const httpsAgent = new https.Agent({ keepAlive: false });
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
@@ -60,8 +66,6 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// --- AANGEPASTE HELPER-FUNCTIE ---
-// Het zoekproces voor één domein. De problematische controller.abort() is verwijderd.
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
@@ -73,13 +77,15 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     let previousUrl = null;
 
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        if (signal.aborted) return null; // Stop als een andere worker succesvol was
+        if (signal.aborted) return null;
         if (visitedUrls.has(currentUrl)) return null;
         visitedUrls.add(currentUrl);
 
         try {
+            // --- AANGEPASTE FETCH CALL ---
             const response = await fetch(currentUrl, {
                 signal,
+                agent: currentUrl.startsWith('https://') ? httpsAgent : httpAgent, // <-- BELANGRIJKE WIJZIGING
                 headers: {
                     ...COMMON_HEADERS,
                     'Referer': previousUrl || initialTarget,
@@ -89,14 +95,13 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             const html = await response.text();
             
-            // CORRECTIE: Breek alleen de loop voor DIT domein, aborteer niet de hele operatie.
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
-                break; // Stop met zoeken op dit domein, het is niet beschikbaar.
+                break;
             }
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
-                controller.abort(); // SUCCES! Aborteer andere workers.
+                controller.abort();
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
 
@@ -112,13 +117,12 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             if (error.name !== 'AbortError') {
                 console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
             }
-            break; // Stop met zoeken op dit domein bij een fout.
+            break;
         }
     }
-    return null; // Geen resultaat gevonden op dit domein.
+    return null;
 }
 
-// --- ORCHESTRATOR-FUNCTIE (ongewijzigd) ---
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
@@ -163,7 +167,6 @@ function getVidSrcStream(type, imdbId, season, episode) {
         }
     });
 }
-
 
 const builder = new addonBuilder(manifest);
 
