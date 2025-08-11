@@ -11,7 +11,12 @@ async function parseJsonBody(req) {
         });
         req.on('end', () => {
             try {
-                resolve(JSON.parse(body));
+                // Voorkom parsen van een lege body
+                if (body) {
+                    resolve(JSON.parse(body));
+                } else {
+                    resolve({});
+                }
             } catch (e) {
                 reject(e);
             }
@@ -51,9 +56,10 @@ module.exports = async (req, res) => {
         // Voer het daadwerkelijke phin-verzoek uit namens de addon
         const response = await p({
             url: targetUrl,
-            method: 'GET', // Aanname dat de proxy altijd GET-requests doet
+            method: 'GET',
             headers: headers,
-            timeout: 15000 // Vervangt AbortSignal.timeout
+            timeout: 15000,
+            followRedirects: true // <-- DE BELANGRIJKE TOEVOEGING
         });
 
         // phin's body is een Buffer, dus converteer naar string
@@ -67,7 +73,7 @@ module.exports = async (req, res) => {
         });
 
     } catch (error) {
-        console.error(`[PROXY ERROR] Fout bij verwerken proxy request:`, error.message);
+        console.error(`[PROXY ERROR] Fout bij verwerken proxy request naar ${req.body ? req.body.targetUrl : 'onbekend'}:`, error.message);
         res.status(500).json({
             error: 'Proxy request failed',
             details: error.message
