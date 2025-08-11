@@ -1,5 +1,9 @@
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
+const http = require('http'); // <-- NIEUWE TOEVOEGING
+
+// --- Agent om Connection Pooling uit te schakelen ---
+const httpAgent = new http.Agent({ keepAlive: false }); // <-- NIEUWE TOEVOEGING
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
@@ -77,6 +81,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
         try {
             const response = await fetch(currentUrl, {
+                agent: httpAgent, // <-- AANGEPAST: gebruik de agent
                 signal,
                 headers: {
                     ...COMMON_HEADERS,
@@ -116,9 +121,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     return null;
 }
 
-
-// --- AANGEPASTE ORCHESTRATOR-FUNCTIE ---
-// Herschreven voor robuustheid om 'hangende' promises te voorkomen.
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
@@ -140,14 +142,11 @@ function getVidSrcStream(type, imdbId, season, episode) {
                 return;
             }
 
-            // Faalconditie: als de wachtrij leeg is en er geen zoekopdrachten meer lopen,
-            // dan is alles geprobeerd en is er niets gevonden.
             if (domainQueue.length === 0 && activeSearches === 0) {
                 resolve(null);
                 return;
             }
 
-            // Vul de worker pool zolang er plek is en er domeinen zijn om te proberen.
             while (activeSearches < MAX_CONCURRENT_SEARCHES && domainQueue.length > 0) {
                 activeSearches++;
                 const domain = domainQueue.shift();
@@ -158,15 +157,12 @@ function getVidSrcStream(type, imdbId, season, episode) {
 
                         if (result && !resultFound) {
                             resultFound = true;
-                            // controller.abort() is al aangeroepen binnen searchDomain
                             resolve(result);
                         } else if (!resultFound) {
-                            // Deze zoekopdracht is mislukt, start een nieuwe als dat kan.
                             launchNext();
                         }
                     })
                     .catch(error => {
-                        // Vang onverwachte fouten binnen searchDomain af
                         activeSearches--;
                         if (error.name !== 'AbortError') {
                             console.error(`[FATAL] Onverwachte fout in searchDomain voor ${domain}:`, error);
@@ -178,7 +174,6 @@ function getVidSrcStream(type, imdbId, season, episode) {
             }
         };
 
-        // Start de operatie door de pool voor de eerste keer te vullen.
         launchNext();
     });
 }
