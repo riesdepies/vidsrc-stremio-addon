@@ -10,7 +10,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.1", // Versie verhoogd
+    "version": "1.4.1",
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -187,40 +187,42 @@ function getVidSrcStream(type, imdbId, season, episode) {
 
 const builder = new addonBuilder(manifest);
 
+// --- VERNIEUWDE STREAM HANDLER ---
 builder.defineStreamHandler(async ({ type, id }) => {
-    // Controleer of de aanvraag voor een daadwerkelijke zoekopdracht is
-    if (id.startsWith(SEARCH_PREFIX)) {
-        // Dit wordt uitgevoerd NADAT de gebruiker op de "Zoek" knop heeft geklikt
-        const realId = id.substring(SEARCH_PREFIX.length);
-        const [imdbId, season, episode] = realId.split(':');
-
-        if (!imdbId) {
-            return Promise.resolve({ streams: [] });
-        }
-
-        const streamSource = await getVidSrcStream(type, imdbId, season, episode);
-
-        if (streamSource) {
-            const stream = {
-                url: streamSource.masterUrl,
-                title: `VidSrc - ${streamSource.sourceDomain}` // Duidelijkere titel
-            };
-            // Deze respons (met http-url) wordt gecached door de Vercel-logica in api/index.js
-            return Promise.resolve({ streams: [stream] });
-        }
-    } else {
-        // Dit is de EERSTE aanvraag. We tonen een "knop" om te zoeken.
+    // Is dit de initiële aanvraag (GEEN zoek-prefix)?
+    if (!id.startsWith(SEARCH_PREFIX)) {
+        // Ja, retourneer de "Zoek" knop en stop.
         const searchStream = {
             name: "Nepflix",
             title: "Zoek naar streams",
-            // De URL verwijst terug naar de addon, maar met de zoek-prefix
             url: `stremio://${manifest.id}/stream/${type}/${SEARCH_PREFIX}${id}`
         };
-        // Deze respons (met stremio:// url) wordt NIET gecached door de logica in api/index.js
         return Promise.resolve({ streams: [searchStream] });
     }
 
-    // Als er geen stream is gevonden na het zoeken, retourneer een lege array
+    // Als we hier zijn, is het een zoekopdracht (de gebruiker heeft geklikt).
+    // Verwijder de prefix om de echte ID te krijgen.
+    const realId = id.substring(SEARCH_PREFIX.length);
+    const [imdbId, season, episode] = realId.split(':');
+
+    if (!imdbId) {
+        return Promise.resolve({ streams: [] });
+    }
+
+    console.log(`Zoeken naar stream voor: ${realId}`);
+    const streamSource = await getVidSrcStream(type, imdbId, season, episode);
+
+    if (streamSource && streamSource.masterUrl) {
+        // Gevonden! Retourneer de echte stream URL.
+        const stream = {
+            url: streamSource.masterUrl,
+            title: `VidSrc - ${streamSource.sourceDomain}`
+        };
+        return Promise.resolve({ streams: [stream] });
+    }
+
+    // Niks gevonden na het zoeken, retourneer een lege lijst.
+    // Stremio zal "No streams were found" tonen.
     return Promise.resolve({ streams: [] });
 });
 
