@@ -8,9 +8,9 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.3.2", // Versie verhoogd
+    "version": "1.4.0", // Versie verhoogd
     "name": "Nepflix",
-    "description": "HLS streams van VidSrc met robuuste proxy fallback.",
+    "description": "HLS streams van VidSrc met sequentiële proxy fallback.",
     "icon": iconUrl,
     "catalogs": [],
     "resources": ["stream"],
@@ -34,17 +34,17 @@ const COMMON_HEADERS = {
 const PROXIES = [
     { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/', needsEncoding: false, responseType: 'raw' },
     { name: 'Codetabs', template: 'https://api.codetabs.com/v1/proxy?quest=', needsEncoding: true, responseType: 'raw' },
+    { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true, responseType: 'json', jsonKey: 'contents' },
     { name: 'corsmirror.com', template: 'https://corsmirror.com/v1?url=', needsEncoding: true, responseType: 'raw' },
+    { name: 'Whatever Origin', template: 'https://whateverorigin.org/get?url=', needsEncoding: true, responseType: 'json', jsonKey: 'contents' },
     { name: 'Tuananh Worker', template: 'https://cors-proxy.tuananh.workers.dev/?', needsEncoding: false, responseType: 'raw' },
     { name: 'Novadrone Worker', template: 'https://cors-proxy.novadrone16.workers.dev?url=', needsEncoding: true, responseType: 'raw' },
     { name: 'My CORS Proxy', template: 'https://my-cors-proxy-kappa.vercel.app/api/proxy?url=', needsEncoding: true, responseType: 'raw' },
-    { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true, responseType: 'json', jsonKey: 'contents' },
-    { name: 'Whatever Origin', template: 'https://whateverorigin.org/get?url=', needsEncoding: true, responseType: 'json', jsonKey: 'contents' }
 ];
 
 /**
- * AANGEPAST: Elke proxy-poging heeft nu een individuele timeout om de totale uitvoeringstijd te bewaken.
- * @returns {Promise<string>} De pure HTML-content.
+ * AANGEPAST: Probeert proxies nu één voor één (sequentieel) in plaats van tegelijk.
+ * Dit is stabieler en geeft betere logging op Vercel.
  */
 async function fetchViaCorsProxy(targetUrl, options = {}, timeout = 5000) {
     const constructProxyUrl = (proxy, url) => {
@@ -52,55 +52,49 @@ async function fetchViaCorsProxy(targetUrl, options = {}, timeout = 5000) {
         return proxy.template + urlPart;
     };
 
-    const fetchPromises = PROXIES.map(proxy => {
-        return new Promise(async (resolve, reject) => {
+    // Loop door elke proxy, één voor één.
+    for (const proxy of PROXIES) {
+        try {
+            console.log(`[PROXY ATTEMPT] Probeert nu proxy: ${proxy.name}`);
             const proxyUrl = constructProxyUrl(proxy, targetUrl);
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+            const fetchOptions = { ...options, signal: controller.signal };
+            const response = await fetch(proxyUrl, fetchOptions);
             
-            // Maak een timeout promise die na X seconden faalt.
-            const timeoutPromise = new Promise((_, r) => 
-                setTimeout(() => r(new Error(`Proxy '${proxy.name}' timed out after ${timeout}ms`)), timeout)
-            );
+            clearTimeout(timeoutId); // Stop de timer als de fetch slaagt
 
-            // De daadwerkelijke fetch-operatie als een promise.
-            const fetchOperation = (async () => {
-                const response = await fetch(proxyUrl, options);
-                if (!response.ok) {
-                    throw new Error(`Proxy '${proxy.name}' faalde met status: ${response.status}`);
-                }
-                
-                console.log(`[PROXY SUCCESS] Data opgehaald via ${proxy.name}`);
-                
-                if (proxy.responseType === 'json') {
-                    const data = await response.json();
-                    const content = data[proxy.jsonKey];
-                    if (content) return content;
-                    throw new Error(`Proxy '${proxy.name}' gaf onverwachte JSON-structuur.`);
-                } else {
-                    return await response.text();
-                }
-            })();
-
-            try {
-                // Race de fetch-operatie tegen de timeout. De eerste die eindigt, wint.
-                const result = await Promise.race([fetchOperation, timeoutPromise]);
-                resolve(result);
-            } catch (error) {
-                // Vang de fout van de race (ofwel van de fetch, ofwel van de timeout)
-                reject(error);
+            if (!response.ok) {
+                throw new Error(`Status code ${response.status}`);
             }
-        });
-    });
 
-    try {
-        // Promise.any wacht op de eerste succesvolle promise uit de lijst.
-        return await Promise.any(fetchPromises);
-    } catch (error) {
-        const allErrors = error.errors ? error.errors.map(e => e.message).join('; ') : 'Onbekende fout';
-        throw new Error(`Alle CORS proxies faalden of time-out: ${allErrors}`);
+            console.log(`[PROXY SUCCESS] Data opgehaald via ${proxy.name}`);
+            
+            let html;
+            if (proxy.responseType === 'json') {
+                const data = await response.json();
+                html = data[proxy.jsonKey];
+                if (!html) throw new Error("Lege 'contents' in JSON-respons.");
+            } else {
+                html = await response.text();
+            }
+            
+            // Als we hier komen, is het gelukt. Geef de HTML terug en stop de lus.
+            return html;
+
+        } catch (error) {
+            // Log de specifieke fout voor deze proxy en ga door naar de volgende.
+            console.error(`[PROXY FAIL] Proxy '${proxy.name}' faalde: ${error.message}`);
+        }
     }
+
+    // Als de lus is afgelopen en geen enkele proxy is geslaagd, gooi dan een finale fout.
+    throw new Error("Alle proxies zijn geprobeerd en hebben gefaald.");
 }
 
-// De rest van de code is ongewijzigd.
+// De rest van de code blijft ongewijzigd.
 async function fetchWithProxyFallback(url, options = {}) {
     try {
         const directResponse = await fetch(url, options);
