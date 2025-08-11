@@ -1,8 +1,8 @@
 // addon.js
 
 const { addonBuilder } = require("stremio-addon-sdk");
-const fetch = require('node-fetch');
-const cheerio = require('cheerio'); // Voeg cheerio toe
+const axios = require('axios'); // Vervang fetch door axios
+const cheerio = require('cheerio');
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
@@ -10,6 +10,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 
 // --- MANIFEST ---
 const manifest = {
+    // ... (rest van manifest blijft hetzelfde)
     "id": "community.nepflix.ries",
     "version": "1.4.0",
     "name": "Nepflix",
@@ -36,28 +37,23 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-// --- AANGEPASTE PROXY FETCH FUNCTIE ---
+// --- AANGEPASTE PROXY FETCH FUNCTIE MET AXIOS ---
 async function fetchViaProxy(url, options) {
     const proxyUrl = host.startsWith('http') ?
         `${host}/api/proxy` :
         `https://${host}/api/proxy`;
 
     try {
-        const proxyRes = await fetch(proxyUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                targetUrl: url,
-                headers: options.headers || {}
-            }),
-            signal: options.signal
+        // Gebruik axios.post om onze proxy aan te roepen
+        const proxyRes = await axios.post(proxyUrl, {
+            targetUrl: url,
+            headers: options.headers || {}
+        }, {
+            signal: options.signal // axios ondersteunt AbortSignal
         });
-
-        if (!proxyRes.ok) {
-            throw new Error(`Proxy-aanroep mislukt met status: ${proxyRes.status}`);
-        }
-
-        const data = await proxyRes.json();
+        
+        // axios plaatst de response data direct in het 'data' veld
+        const data = proxyRes.data;
 
         if (data.error) {
             throw new Error(data.details || data.error);
@@ -70,47 +66,41 @@ async function fetchViaProxy(url, options) {
             text: () => Promise.resolve(data.body)
         };
     } catch (error) {
-        if (error.name !== 'AbortError') {
+        if (error.name !== 'AbortError' && !axios.isCancel(error)) {
             console.error(`[PROXY CLIENT ERROR] Fout bij aanroepen van proxy voor ${url}:`, error.message);
         }
         throw error;
     }
 }
 
-
+// --- findNextUrl en extractM3u8Url blijven ongewijzigd ---
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
     const match = htmlContent.match(regex);
     return match ? match[1] : null;
 }
 
-// --- NIEUWE GECOMBINEERDE FUNCTIE MET CHEERIO ---
 function findNextUrl(html) {
-    // 1. Probeer eerst met Cheerio een <iframe> src te vinden (meest betrouwbaar)
     const $ = cheerio.load(html);
     const iframeSrc = $('iframe').attr('src');
     if (iframeSrc) {
         return iframeSrc;
     }
-
-    // 2. Fallback: zoek in <script> tags naar dynamisch ingestelde bronnen
     const combinedRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
     let match;
     while ((match = combinedRegex.exec(html)) !== null) {
         const url = match[1];
         if (url) {
             const path = url.split('?')[0].split('#')[0];
-            // Zorg ervoor dat we geen .js-bestanden als iframe-bron beschouwen
             if (!path.endsWith('.js')) {
                 return url;
             }
         }
     }
-    
     return null;
 }
 
-
+// --- searchDomain en getVidSrcStream blijven ongewijzigd ---
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
@@ -137,6 +127,11 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             if (!response.ok) break;
 
             const html = await response.text();
+            
+            if (!html || typeof html !== 'string') {
+                console.error(`[ERROR] Lege of ongeldige HTML ontvangen van ${currentUrl}`);
+                break;
+            }
 
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
                 controller.abort();
@@ -149,7 +144,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
 
-            // Gebruik de nieuwe functie om de volgende URL te vinden
             let nextIframeSrc = findNextUrl(html);
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
@@ -159,7 +153,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             }
 
         } catch (error) {
-            if (error.name !== 'AbortError') {
+            if (error.name !== 'AbortError' && !axios.isCancel(error)) {
                 console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
             }
             break;
@@ -212,7 +206,7 @@ function getVidSrcStream(type, imdbId, season, episode) {
     });
 }
 
-
+// --- builder en defineStreamHandler blijven ongewijzigd ---
 const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
