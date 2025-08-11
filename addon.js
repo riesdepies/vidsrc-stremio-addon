@@ -1,7 +1,7 @@
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
-const http = require('http'); // <-- Nieuw: import http module
-const https = require('https'); // <-- Nieuw: import https module
+const http = require('http');
+const https = require('httpss');
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
@@ -10,7 +10,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.2", // Versie verhoogd vanwege stabiliteitsfix
+    "version": "1.4.3", // Versie verhoogd vanwege timeout implementatie
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -20,12 +20,13 @@ const manifest = {
     "idPrefixes": ["tt"]
 };
 
-// --- NIEUW: Agents voor het uitschakelen van connection pooling ---
+// Agents voor het uitschakelen van connection pooling
 const httpAgent = new http.Agent({ keepAlive: false });
 const httpsAgent = new https.Agent({ keepAlive: false });
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
+const REQUEST_TIMEOUT = 10000; // 10 seconden
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
 const COMMON_HEADERS = {
@@ -39,6 +40,7 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
+// ... (onveranderde helper functies: extractM3u8Url, findJsIframeSrc, findHtmlIframeSrc)
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
     const match = htmlContent.match(regex);
@@ -66,8 +68,10 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
+
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
-    const signal = controller.signal;
+    // Gebruik het signaal van de overkoepelende controller
+    const overallSignal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
     if (apiType === 'tv' && season && episode) {
         initialTarget += `/${season}-${episode}`;
@@ -77,20 +81,27 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     let previousUrl = null;
 
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        if (signal.aborted) return null;
+        // Stop als een andere worker al succes had
+        if (overallSignal.aborted) return null;
         if (visitedUrls.has(currentUrl)) return null;
         visitedUrls.add(currentUrl);
 
+        // --- NIEUW: Timeout per request ---
+        const timeoutController = new AbortController();
+        const timeoutId = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT);
+        // Combineer de signalen: stop bij overkoepelende abort of bij lokale timeout
+        const combinedSignal = AbortSignal.any([overallSignal, timeoutController.signal]);
+
         try {
-            // --- AANGEPASTE FETCH CALL ---
             const response = await fetch(currentUrl, {
-                signal,
-                agent: currentUrl.startsWith('https://') ? httpsAgent : httpAgent, // <-- BELANGRIJKE WIJZIGING
+                signal: combinedSignal, // Gebruik het gecombineerde signaal
+                agent: currentUrl.startsWith('https://') ? httpsAgent : httpAgent,
                 headers: {
                     ...COMMON_HEADERS,
                     'Referer': previousUrl || initialTarget,
                 }
             });
+            
             if (!response.ok) break;
 
             const html = await response.text();
@@ -101,7 +112,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
-                controller.abort();
+                controller.abort(); // SUCCES! Aborteer andere workers.
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
 
@@ -117,12 +128,16 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             if (error.name !== 'AbortError') {
                 console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
             }
-            break;
+            break; 
+        } finally {
+            // --- BELANGRIJK: Ruim de timeout op! ---
+            clearTimeout(timeoutId);
         }
     }
     return null;
 }
 
+// ... (getVidSrcStream en de rest van de code blijven ongewijzigd)
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
