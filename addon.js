@@ -10,9 +10,9 @@ const proxyUrlBase = host.startsWith('http') ? `${host}/api/proxy?url=` : `https
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.7.0", // Versie verhoogd voor timeout-logica
+    "version": "1.8.0", // Versie verhoogd voor robuuste timeout
     "name": "Nepflix",
-    "description": "HLS streams van VidSrc met timeouts en robuuste retries",
+    "description": "HLS streams van VidSrc met agressieve timeouts",
     "icon": iconUrl,
     "catalogs": [],
     "resources": ["stream"],
@@ -23,8 +23,9 @@ const manifest = {
 // --- CONSTANTEN ---
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
-const MAX_ATTEMPTS = 5; // Totaal aantal pogingen (1 direct + 4 via proxy)
-const FETCH_TIMEOUT_MS = 5000; // Time-out per fetch-poging in milliseconden
+const MAX_ATTEMPTS = 5;
+// --- WIJZIGING: Agressievere timeout om Vercel's 10s limiet voor te zijn ---
+const FETCH_TIMEOUT_MS = 4000; // 4 seconden per poging
 const STAGGER_DELAY_MS = 200;
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
@@ -33,58 +34,52 @@ const COMMON_HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9'
 };
 
-// --- NIEUWE FETCH-FUNCTIE MET INGEBOUWDE TIMEOUT EN RETRIES ---
+// --- WIJZIGING: Zeer robuuste fetch-functie met Promise.race voor timeouts ---
+async function fetchWithTimeout(url, options) {
+    const { timeout = FETCH_TIMEOUT_MS } = options;
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    // Promise.race zorgt ervoor dat de snelste promise wint.
+    // Ofwel de fetch slaagt, ofwel de timeout promise reject na X milliseconden.
+    return Promise.race([
+        fetch(url, { ...options, signal }),
+        new Promise((_, reject) =>
+            setTimeout(() => {
+                controller.abort();
+                reject(new Error(`Timeout na ${timeout}ms`));
+            }, timeout)
+        )
+    ]);
+}
+
 async function fetchWithRetries(url, options) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        // Maak voor elke poging een nieuwe AbortController voor de time-out.
-        const timeoutController = new AbortController();
-        const timeout = setTimeout(() => timeoutController.abort(), FETCH_TIMEOUT_MS);
-
-        // Combineer de time-out-signal met het algemene signaal van de orchestrator.
-        // Als een van de twee abort, stopt de fetch.
-        const combinedSignal = AbortSignal.any([options.signal, timeoutController.signal]);
-
         try {
             let response;
-            const fetchOptions = { ...options, signal: combinedSignal };
-            
             if (attempt === 1) {
                 // Poging 1: Direct
-                response = await fetch(url, fetchOptions);
+                response = await fetchWithTimeout(url, options);
             } else {
                 // Poging 2-5: Via proxy
                 console.log(`[RETRY ${attempt}/${MAX_ATTEMPTS}] Poging via proxy voor ${url}`);
                 const proxiedUrl = proxyUrlBase + encodeURIComponent(url);
-                response = await fetch(proxiedUrl, { 
-                    headers: options.headers, 
-                    signal: combinedSignal 
-                });
+                response = await fetchWithTimeout(proxiedUrl, { headers: options.headers });
             }
 
             if (response.ok) {
-                clearTimeout(timeout); // Belangrijk: annuleer de time-out bij succes.
                 return { response, attempt };
             }
-            
             console.log(`[ATTEMPT ${attempt} FAILED] Status ${response.status} voor ${url}`);
 
         } catch (error) {
-            if (error.name === 'AbortError') {
-                if (timeoutController.signal.aborted) {
-                    console.error(`[ATTEMPT ${attempt} FAILED] Timeout na ${FETCH_TIMEOUT_MS}ms`);
-                } else {
-                    // Dit betekent dat de algemene zoekopdracht is gestopt (omdat een andere is geslaagd).
-                    // Gooi de error door om de lus te stoppen.
-                    throw new Error("Operation aborted by orchestrator");
-                }
-            } else {
-                 console.error(`[ATTEMPT ${attempt} FAILED] Error: ${error.message}`);
+            console.error(`[ATTEMPT ${attempt} FAILED] Error: ${error.message}`);
+            // Als de algehele zoekactie is geannuleerd, stop dan onmiddellijk.
+            if (options.signal && options.signal.aborted) {
+                throw new Error("Operation aborted by orchestrator");
             }
-        } finally {
-            clearTimeout(timeout); // Zorg ervoor dat de timeout altijd wordt opgeruimd.
         }
     }
-    // Als de lus eindigt zonder succes
     throw new Error(`Alle ${MAX_ATTEMPTS} pogingen voor ${url} zijn mislukt.`);
 }
 
@@ -109,9 +104,8 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// --- searchDomain functie (ONGEWIJZIGD qua logica, gebruikt nu de nieuwe fetcher) ---
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
-    const signal = controller.signal;
+    const signal = controller.signal; // Dit is het signaal om de HELE zoekopdracht te stoppen.
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
     if (apiType === 'tv' && season && episode) {
         initialTarget += `/${season}-${episode}`;
@@ -127,7 +121,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
         try {
             const { response, attempt } = await fetchWithRetries(currentUrl, {
-                signal,
+                signal, // Geef het master-signaal door
                 headers: { ...COMMON_HEADERS, 'Referer': previousUrl || initialTarget }
             });
 
@@ -151,16 +145,15 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             } else { break; }
 
         } catch (error) {
-            if (error.message !== "Operation aborted by orchestrator") {
-                 console.error(`[ERROR] Verwerken van domein ${domain} gestopt:`, error.message);
-            }
+            console.error(`[SEARCH FAILED] Zoektocht voor domein ${domain} gestopt: ${error.message}`);
+            // Gooi geen error meer, maar breek de lus af en laat de functie null retourneren.
+            // Dit voorkomt dat één falend domein alle andere parallelle zoekopdrachten stopt.
             break;
         }
     }
     return null;
 }
 
-// --- Orchestrator (ONGEWIJZIGD) ---
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
@@ -208,7 +201,6 @@ function getOrdinalSuffix(n) {
     return `${n}th`;
 }
 
-// --- Stream Handler met AANGEPASTE TITEL ---
 const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
@@ -218,7 +210,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
     if (streamSource) {
-        // Bouw de titel dynamisch op, zonder blokhaken.
         let title = streamSource.sourceDomain;
         if (streamSource.attempt > 1) {
             const suffix = getOrdinalSuffix(streamSource.attempt);
