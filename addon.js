@@ -1,7 +1,7 @@
 // addon.js
 
 const { addonBuilder } = require("stremio-addon-sdk");
-const axios = require('axios'); // Vervang fetch door axios
+const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 
 // --- DYNAMISCHE HOST & ICOON URL ---
@@ -10,7 +10,6 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 
 // --- MANIFEST ---
 const manifest = {
-    // ... (rest van manifest blijft hetzelfde)
     "id": "community.nepflix.ries",
     "version": "1.4.0",
     "name": "Nepflix",
@@ -37,23 +36,28 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-// --- AANGEPASTE PROXY FETCH FUNCTIE MET AXIOS ---
+// --- AANGEPASTE PROXY FETCH FUNCTIE ---
 async function fetchViaProxy(url, options) {
     const proxyUrl = host.startsWith('http') ?
         `${host}/api/proxy` :
         `https://${host}/api/proxy`;
 
     try {
-        // Gebruik axios.post om onze proxy aan te roepen
-        const proxyRes = await axios.post(proxyUrl, {
-            targetUrl: url,
-            headers: options.headers || {}
-        }, {
-            signal: options.signal // axios ondersteunt AbortSignal
+        const proxyRes = await fetch(proxyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                targetUrl: url,
+                headers: options.headers || {}
+            }),
+            signal: options.signal
         });
-        
-        // axios plaatst de response data direct in het 'data' veld
-        const data = proxyRes.data;
+
+        if (!proxyRes.ok) {
+            throw new Error(`Proxy-aanroep mislukt met status: ${proxyRes.status}`);
+        }
+
+        const data = await proxyRes.json();
 
         if (data.error) {
             throw new Error(data.details || data.error);
@@ -66,14 +70,14 @@ async function fetchViaProxy(url, options) {
             text: () => Promise.resolve(data.body)
         };
     } catch (error) {
-        if (error.name !== 'AbortError' && !axios.isCancel(error)) {
+        if (error.name !== 'AbortError') {
             console.error(`[PROXY CLIENT ERROR] Fout bij aanroepen van proxy voor ${url}:`, error.message);
         }
         throw error;
     }
 }
 
-// --- findNextUrl en extractM3u8Url blijven ongewijzigd ---
+
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
     const match = htmlContent.match(regex);
@@ -100,7 +104,6 @@ function findNextUrl(html) {
     return null;
 }
 
-// --- searchDomain en getVidSrcStream blijven ongewijzigd ---
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
@@ -153,7 +156,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             }
 
         } catch (error) {
-            if (error.name !== 'AbortError' && !axios.isCancel(error)) {
+            if (error.name !== 'AbortError') {
                 console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
             }
             break;
@@ -206,7 +209,6 @@ function getVidSrcStream(type, imdbId, season, episode) {
     });
 }
 
-// --- builder en defineStreamHandler blijven ongewijzigd ---
 const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
