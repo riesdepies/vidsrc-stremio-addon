@@ -1,5 +1,7 @@
 // api/index.js
 
+global.fetch = undefined; // VERBERG DE PROBLEMATISCHE INGEBOUWDE FETCH
+
 const { getRouter } = require('stremio-addon-sdk');
 const addonInterface = require('../addon.js');
 
@@ -19,13 +21,11 @@ module.exports = (req, res) => {
 
         // Stel alleen een lange cachetijd in als de respons succesvol is (status 200)
         // en een ECHTE, afspeelbare stream-URL bevat.
-        // We controleren op '"url":"http' om 'stremio://' urls uit te sluiten.
         if (this.statusCode === 200 && body.includes('"url":"http')) {
             // SUCCES: Cache voor 6 uur.
             this.setHeader('Cache-Control', 'public, s-maxage=21600, stale-while-revalidate=3600');
         } else {
             // FOUT, "RETRY"-LINK of LEGE RESPONS: NIET CACHEN.
-            // s-maxage=0 geeft de Vercel CDN de instructie om deze respons niet op te slaan.
             this.setHeader('Cache-Control', 'public, s-maxage=0');
         }
 
