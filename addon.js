@@ -2,6 +2,7 @@
 
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
+const cookie = require('cookie');
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
@@ -36,9 +37,8 @@ const COMMON_HEADERS = {
 };
 
 // --- AANGEPASTE PROXY FETCH FUNCTIE ---
-// Deze functie roept onze eigen /api/proxy endpoint aan met de juiste URL.
-async function fetchViaProxy(url, options) {
-// Bouw de volledige URL naar de proxy, inclusief protocol.
+// Deze functie roept onze eigen /api/proxy endpoint aan met de juiste URL en cookies.
+async function fetchViaProxy(url, options, cookieString) {
 const proxyUrl = host.startsWith('http')
 ? `${host}/api/proxy`
 : `https://${host}/api/proxy`;
@@ -49,7 +49,8 @@ method: 'POST',
 headers: { 'Content-Type': 'application/json' },
 body: JSON.stringify({
 targetUrl: url,
-headers: options.headers || {}
+headers: options.headers || {},
+cookie: cookieString || null
 }),
 signal: options.signal
 });
@@ -68,7 +69,8 @@ return {
 ok: data.status >= 200 && data.status < 300,
 status: data.status,
 statusText: data.statusText,
-text: () => Promise.resolve(data.body)
+text: () => Promise.resolve(data.body),
+setCookie: data.setCookie || null
 };
 } catch (error) {
 if (error.name !== 'AbortError') {
@@ -115,6 +117,7 @@ initialTarget += `/${season}-${episode}`;
 
 let currentUrl = initialTarget;
 let previousUrl = null;
+let currentCookies = {}; // Cookie jar voor deze zoek-sessie
 
 for (let step = 1; step <= MAX_REDIRECTS; step++) {
 if (signal.aborted) return null;
@@ -122,13 +125,30 @@ if (visitedUrls.has(currentUrl)) return null;
 visitedUrls.add(currentUrl);
 
 try {
+const cookieString = Object.entries(currentCookies)
+.map(([key, value]) => `${key}=${value}`)
+.join('; ');
+
 const response = await fetchViaProxy(currentUrl, {
 signal,
 headers: {
 ...COMMON_HEADERS,
 'Referer': previousUrl || initialTarget,
 }
-});
+}, cookieString);
+
+// Update cookie jar met nieuwe cookies
+if (response.setCookie) {
+    response.setCookie.forEach(cookieHeader => {
+        const parsed = cookie.parse(cookieHeader);
+        const cookieName = Object.keys(parsed)[0];
+        if (cookieName) {
+            currentCookies[cookieName] = parsed[cookieName];
+        }
+    });
+}
+
+
 if (!response.ok) break;
 
 const html = await response.text();
