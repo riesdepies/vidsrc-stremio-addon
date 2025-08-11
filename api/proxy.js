@@ -1,5 +1,7 @@
 // /api/proxy.js
 
+const fetch = require('node-fetch');
+
 // Helper-functie om de JSON-body van een request te parsen
 async function parseJsonBody(req) {
     return new Promise((resolve, reject) => {
@@ -45,12 +47,11 @@ module.exports = async (req, res) => {
         if (!targetUrl) {
             return res.status(400).json({ error: 'Bad Request: targetUrl is required' });
         }
-
+        
         // Voer het daadwerkelijke fetch-verzoek uit namens de addon
-        // Gebruikt de native fetch van Node.js 18+
         const response = await fetch(targetUrl, {
             headers: headers,
-            signal: AbortSignal.timeout(15000)
+            signal: AbortSignal.timeout(15000) 
         });
 
         const body = await response.text();
@@ -64,9 +65,9 @@ module.exports = async (req, res) => {
 
     } catch (error) {
         console.error(`[PROXY ERROR] Fout bij verwerken proxy request:`, error.message);
-        res.status(500).json({
-            error: 'Proxy request failed',
-            details: error.message
+        res.status(500).json({ 
+            error: 'Proxy request failed', 
+            details: error.message 
         });
     }
 };
