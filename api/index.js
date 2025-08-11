@@ -1,5 +1,3 @@
-// api/index.js
-
 const { getRouter } = require('stremio-addon-sdk');
 const addonInterface = require('../addon.js');
 
@@ -15,18 +13,18 @@ module.exports = (req, res) => {
     const originalEnd = res.end;
     res.end = function(chunk, encoding) {
         // 'this' verwijst naar het 'res' object.
+        // We controleren de inhoud van de respons voordat deze wordt verzonden.
         const body = chunk ? chunk.toString('utf-8') : '';
 
         // Stel alleen een lange cachetijd in als de respons succesvol is (status 200)
-        // en een ECHTE, afspeelbare stream-URL bevat.
-        // We controleren op '"url":"http' om 'stremio://' urls uit te sluiten.
-        if (this.statusCode === 200 && body.includes('"url":"http')) {
+        // en daadwerkelijk een stream-URL bevat.
+        if (this.statusCode === 200 && body.includes('"url":')) {
             // SUCCES: Cache voor 6 uur.
             this.setHeader('Cache-Control', 'public, s-maxage=21600, stale-while-revalidate=3600');
         } else {
-            // FOUT, "RETRY"-LINK of LEGE RESPONS: NIET CACHEN.
-            // s-maxage=0 geeft de Vercel CDN de instructie om deze respons niet op te slaan.
-            this.setHeader('Cache-Control', 'public, s-maxage=0');
+            // FOUT of LEGE RESPONS: Cache voor slechts 1 minuut.
+            // Dit geeft het systeem de tijd om te herstellen van tijdelijke fouten.
+            this.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=10');
         }
 
         // Roep de originele 'end' functie aan om de respons daadwerkelijk te versturen.

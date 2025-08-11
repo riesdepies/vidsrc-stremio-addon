@@ -2,26 +2,6 @@
 
 const fetch = require('node-fetch');
 
-// Helper-functie om de JSON-body van een request te parsen
-async function parseJsonBody(req) {
-    return new Promise((resolve, reject) => {
-        let body = '';
-        req.on('data', chunk => {
-            body += chunk.toString();
-        });
-        req.on('end', () => {
-            try {
-                resolve(JSON.parse(body));
-            } catch (e) {
-                reject(e);
-            }
-        });
-        req.on('error', (err) => {
-            reject(err);
-        });
-    });
-}
-
 // Exporteer de serverless functie
 module.exports = async (req, res) => {
     // Stel CORS headers in voor alle responses
@@ -40,20 +20,22 @@ module.exports = async (req, res) => {
         return res.status(405).json({ error: 'Method Not Allowed' });
     }
 
-    try {
-        // Parse de body van het POST-verzoek
-        const { targetUrl, headers } = await parseJsonBody(req);
+    // De body van het POST-verzoek moet de doel-URL en headers bevatten
+    const { targetUrl, headers } = req.body;
 
-        if (!targetUrl) {
-            return res.status(400).json({ error: 'Bad Request: targetUrl is required' });
-        }
-        
+    if (!targetUrl) {
+        return res.status(400).json({ error: 'Bad Request: targetUrl is required' });
+    }
+
+    try {
         // Voer het daadwerkelijke fetch-verzoek uit namens de addon
         const response = await fetch(targetUrl, {
             headers: headers,
+            // Vercel serverless functies hebben een timeout, we respecteren een redelijke limiet
             signal: AbortSignal.timeout(15000) 
         });
 
+        // Haal de body (HTML-tekst) op
         const body = await response.text();
 
         // Stuur de status en de body van de doelwebsite terug naar de addon
@@ -64,9 +46,10 @@ module.exports = async (req, res) => {
         });
 
     } catch (error) {
-        console.error(`[PROXY ERROR] Fout bij verwerken proxy request:`, error.message);
-        res.status(500).json({ 
-            error: 'Proxy request failed', 
+        // Als de fetch mislukt, stuur een serverfout terug
+        console.error(`[PROXY ERROR] Fout bij fetchen van ${targetUrl}:`, error.message);
+        res.status(502).json({ 
+            error: 'Proxy fetch failed', 
             details: error.message 
         });
     }
