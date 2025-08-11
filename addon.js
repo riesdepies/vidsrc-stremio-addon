@@ -36,13 +36,11 @@ const COMMON_HEADERS = {
 };
 
 // --- AANGEPASTE PROXY FETCH FUNCTIE ---
-// Deze functie roept onze eigen /api/proxy endpoint aan met de juiste URL.
 async function fetchViaProxy(url, options) {
-    // Bouw de volledige URL naar de proxy, inclusief protocol.
-    const proxyUrl = host.startsWith('http') 
-        ? `${host}/api/proxy` 
+    const proxyUrl = host.startsWith('http')
+        ? `${host}/api/proxy`
         : `https://${host}/api/proxy`;
-    
+
     try {
         const proxyRes = await fetch(proxyUrl, {
             method: 'POST',
@@ -59,7 +57,7 @@ async function fetchViaProxy(url, options) {
         }
 
         const data = await proxyRes.json();
-        
+
         if (data.error) {
             throw new Error(data.details || data.error);
         }
@@ -77,7 +75,6 @@ async function fetchViaProxy(url, options) {
         throw error;
     }
 }
-
 
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
@@ -115,10 +112,19 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
     let currentUrl = initialTarget;
     let previousUrl = null;
+    
+    // TOEGEVOEGD VOOR DEBUGGING
+    console.log(`[SEARCH] Start search on domain: ${domain} for ${imdbId}`);
 
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        if (signal.aborted) return null;
-        if (visitedUrls.has(currentUrl)) return null;
+        if (signal.aborted) {
+            console.log(`[SEARCH] Search on ${domain} aborted by controller.`);
+            return null;
+        }
+        if (visitedUrls.has(currentUrl)) {
+            console.log(`[SEARCH] URL already visited, skipping: ${currentUrl}`);
+            return null;
+        }
         visitedUrls.add(currentUrl);
 
         try {
@@ -129,17 +135,22 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
                     'Referer': previousUrl || initialTarget,
                 }
             });
-            if (!response.ok) break;
+            if (!response.ok) {
+                console.log(`[SEARCH] Step ${step} on ${domain}: Received non-OK status ${response.status} for ${currentUrl}`);
+                break;
+            }
 
             const html = await response.text();
-            
+
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
+                console.log(`[SEARCH] Media unavailable on domain ${domain}. Aborting all searches.`);
                 controller.abort();
                 return null;
             }
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
+                console.log(`[SUCCESS] Found m3u8 URL on domain ${domain}: ${m3u8Url}`);
                 controller.abort();
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
@@ -148,7 +159,9 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
+                console.log(`[SEARCH] Step ${step} on ${domain}: Found next iframe, redirecting to: ${currentUrl}`);
             } else {
+                console.log(`[SEARCH] Step ${step} on ${domain}: No m3u8 or next iframe found. Ending search for this domain.`);
                 break;
             }
 
@@ -159,6 +172,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             break;
         }
     }
+    console.log(`[SEARCH] Finished search on domain ${domain} without finding m3u8.`);
     return null;
 }
 
@@ -174,13 +188,24 @@ function getVidSrcStream(type, imdbId, season, episode) {
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
+    console.log(`[GETSTREAM] Starting stream search for ${imdbId}`);
+
     return new Promise(resolve => {
         let activeSearches = 0;
         let resultFound = false;
 
+        const onComplete = () => {
+            activeSearches--;
+            if (activeSearches === 0 && !resultFound) {
+                console.log(`[GETSTREAM] All searches completed for ${imdbId}, no stream found.`);
+                resolve(null);
+            }
+        };
+
         const launchNext = () => {
             if (resultFound || domainQueue.length === 0) {
-                if (activeSearches === 0 && !resultFound) {
+                if(activeSearches === 0 && !resultFound){
+                    console.log(`[GETSTREAM] All searches completed for ${imdbId}, no stream found.`);
                     resolve(null);
                 }
                 return;
@@ -191,16 +216,19 @@ function getVidSrcStream(type, imdbId, season, episode) {
 
             searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
                 .then(result => {
-                    activeSearches--;
                     if (result && !resultFound) {
                         resultFound = true;
+                        console.log(`[GETSTREAM] Final result found for ${imdbId} from domain ${domain}.`);
                         resolve(result);
-                    } else {
-                        launchNext();
                     }
+                    onComplete();
+                })
+                .catch(err => {
+                    console.error(`[GETSTREAM] Unhandled error in searchDomain for ${domain}:`, err);
+                    onComplete();
                 });
         };
-        for (let i = 0; i < MAX_CONCURRENT_SEARCHES; i++) {
+        for (let i = 0; i < MAX_CONCURRENT_SEARCHES && i < domainQueue.length; i++) {
             launchNext();
         }
     });
@@ -220,7 +248,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (streamSource) {
         const stream = {
             url: streamSource.masterUrl,
-            title: streamSource.sourceDomain
+            title: `[VidSrc] ${streamSource.sourceDomain}` // Duidelijkere titel
         };
         return Promise.resolve({ streams: [stream] });
     }
