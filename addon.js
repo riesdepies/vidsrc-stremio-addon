@@ -25,15 +25,20 @@ const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vi
 const MAX_REDIRECTS = 5;
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
+// --- BIJGEWERKTE HEADERS ---
+// Deze headers emuleren een Chrome browser op Windows beter.
 const COMMON_HEADERS = {
-'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-'Accept-Language': 'en-US,en;q=0.9',
-'Accept-Encoding': 'gzip, deflate, br',
-'Upgrade-Insecure-Requests': '1',
-'Sec-Fetch-Site': 'cross-site',
-'Sec-Fetch-Mode': 'navigate',
-'Sec-Fetch-Dest': 'iframe',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Sec-Ch-Ua': '"Not_A Brand";v="99", "Google Chrome";v="108", "Chromium";v="108"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'iframe',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'cross-site',
+    'Upgrade-Insecure-Requests': '1',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
 };
 
 // --- AANGEPASTE PROXY FETCH FUNCTIE ---
@@ -133,7 +138,7 @@ const response = await fetchViaProxy(currentUrl, {
 signal,
 headers: {
 ...COMMON_HEADERS,
-'Referer': previousUrl || initialTarget,
+'Referer': previousUrl || initialTarget, // Dynamische Referer is cruciaal
 }
 }, cookieString);
 
