@@ -1,7 +1,7 @@
+// addon.js (volledige, aangepaste code)
+
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
-const http = require('http');
-const https = require('https'); // <-- CORRECTIE HIER
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
@@ -10,7 +10,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.4", // Versie verhoogd vanwege kritieke bugfix
+    "version": "1.4.0",
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -20,13 +20,8 @@ const manifest = {
     "idPrefixes": ["tt"]
 };
 
-// Agents voor het uitschakelen van connection pooling
-const httpAgent = new http.Agent({ keepAlive: false });
-const httpsAgent = new https.Agent({ keepAlive: false });
-
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
-const REQUEST_TIMEOUT = 10000; // 10 seconden
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
 const COMMON_HEADERS = {
@@ -67,8 +62,9 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
+// --- AANGEPASTE searchDomain FUNCTIE DIE DE PROXY GEBRUIKT ---
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
-    const overallSignal = controller.signal;
+    const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
     if (apiType === 'tv' && season && episode) {
         initialTarget += `/${season}-${episode}`;
@@ -77,31 +73,38 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     let currentUrl = initialTarget;
     let previousUrl = null;
 
+    const proxyUrl = `${host}/api/proxy`;
+
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        if (overallSignal.aborted) return null;
+        if (signal.aborted) return null;
         if (visitedUrls.has(currentUrl)) return null;
         visitedUrls.add(currentUrl);
 
-        const timeoutController = new AbortController();
-        const timeoutId = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT);
-        const combinedSignal = AbortSignal.any([overallSignal, timeoutController.signal]);
-
         try {
-            const response = await fetch(currentUrl, {
-                signal: combinedSignal,
-                agent: currentUrl.startsWith('https://') ? httpsAgent : httpAgent,
+            // Opties voor de fetch die naar de proxy gestuurd worden
+            const fetchOptions = {
+                signal,
                 headers: {
                     ...COMMON_HEADERS,
                     'Referer': previousUrl || initialTarget,
                 }
-            });
+            };
             
+            // Verzoek naar onze eigen proxy-functie
+            const response = await fetch(proxyUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ targetUrl: currentUrl, fetchOptions }),
+                signal // Zorg ervoor dat de AbortController ook de proxy-aanroep kan stoppen
+            });
+
             if (!response.ok) break;
 
             const html = await response.text();
             
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
-                break;
+                controller.abort();
+                return null;
             }
 
             const m3u8Url = extractM3u8Url(html);
@@ -113,6 +116,8 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
+                // Gebruik de 'response.url' van de proxy fetch niet, want die is altijd de proxy-url zelf.
+                // We moeten de nieuwe URL construeren op basis van de *vorige* currentUrl.
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
             } else {
                 break;
@@ -120,16 +125,16 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
         } catch (error) {
             if (error.name !== 'AbortError') {
-                console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
+                console.error(`[ERROR] Fout bij verwerken van domein ${domain} via proxy voor URL ${currentUrl}:`, error.message);
             }
-            break; 
-        } finally {
-            clearTimeout(timeoutId);
+            break;
         }
     }
     return null;
 }
 
+
+// --- Orchestrator-functie (ONGEWIJZIGD) ---
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
@@ -155,16 +160,17 @@ function getVidSrcStream(type, imdbId, season, episode) {
             }
 
             activeSearches++;
-            const domain = domainQueue.shift(); 
+            const domain = domainQueue.shift();
 
             searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
                 .then(result => {
                     activeSearches--;
+
                     if (result && !resultFound) {
                         resultFound = true;
                         resolve(result);
-                    } else if (!resultFound) {
-                         launchNext();
+                    } else {
+                        launchNext();
                     }
                 });
         };
@@ -174,6 +180,7 @@ function getVidSrcStream(type, imdbId, season, episode) {
         }
     });
 }
+
 
 const builder = new addonBuilder(manifest);
 
