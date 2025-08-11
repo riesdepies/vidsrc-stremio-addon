@@ -35,10 +35,13 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-// --- NIEUWE PROXY FETCH FUNCTIE ---
-// Deze functie roept onze eigen /api/proxy endpoint aan.
+// --- AANGEPASTE PROXY FETCH FUNCTIE ---
+// Deze functie roept onze eigen /api/proxy endpoint aan met de juiste URL.
 async function fetchViaProxy(url, options) {
-    const proxyUrl = `${host}/api/proxy`;
+    // Bouw de volledige URL naar de proxy, inclusief protocol.
+    const proxyUrl = host.startsWith('http') 
+        ? `${host}/api/proxy` 
+        : `https://${host}/api/proxy`;
     
     try {
         const proxyRes = await fetch(proxyUrl, {
@@ -48,34 +51,29 @@ async function fetchViaProxy(url, options) {
                 targetUrl: url,
                 headers: options.headers || {}
             }),
-            signal: options.signal // Geef het abort signal door aan de proxy-aanroep
+            signal: options.signal
         });
 
         if (!proxyRes.ok) {
-            // De proxy zelf gaf een fout terug (bv. 502 Bad Gateway)
             throw new Error(`Proxy-aanroep mislukt met status: ${proxyRes.status}`);
         }
 
         const data = await proxyRes.json();
         
         if (data.error) {
-            // De proxy meldt een fout bij het fetchen van de doel-URL
             throw new Error(data.details || data.error);
         }
 
-        // Maak een object dat lijkt op een standaard Fetch Response object
         return {
             ok: data.status >= 200 && data.status < 300,
             status: data.status,
             statusText: data.statusText,
-            text: () => Promise.resolve(data.body) // retourneer de HTML-body
+            text: () => Promise.resolve(data.body)
         };
     } catch (error) {
-        // Vang fouten op zoals netwerkproblemen of abort signal
         if (error.name !== 'AbortError') {
             console.error(`[PROXY CLIENT ERROR] Fout bij aanroepen van proxy voor ${url}:`, error.message);
         }
-        // Gooi de fout door zodat searchDomain deze kan afhandelen
         throw error;
     }
 }
@@ -108,8 +106,6 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// --- AANGEPASTE searchDomain FUNCTIE ---
-// Gebruikt nu fetchViaProxy in plaats van rechtstreeks fetch
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
@@ -126,7 +122,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
         visitedUrls.add(currentUrl);
 
         try {
-            // --- DEZE REGEL IS GEWIJZIGD ---
             const response = await fetchViaProxy(currentUrl, {
                 signal,
                 headers: {
@@ -134,8 +129,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
                     'Referer': previousUrl || initialTarget,
                 }
             });
-            // --- EINDE WIJZIGING ---
-
             if (!response.ok) break;
 
             const html = await response.text();
@@ -169,7 +162,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     return null;
 }
 
-// Orchestrator-functie (onveranderd)
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
