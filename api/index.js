@@ -1,41 +1,9 @@
 // api/index.js
 
 const { getRouter } = require('stremio-addon-sdk');
-// Importeer nu het object met de interface en de scrape-functie
-const { addonInterface, getVidSrcStream } = require('../addon.js');
+const addonInterface = require('../addon.js');
 
 const router = getRouter(addonInterface);
-
-// --- NIEUWE ROUTE VOOR HET AFHANDELEN VAN DE ZOEKOPDRACHT ---
-// Deze route wordt aangeroepen wanneer de gebruiker op de "Zoek op Nepflix" knop klikt.
-router.get('/search/:type/:id', async (req, res) => {
-    // Zorg ervoor dat de response als JSON wordt behandeld door Stremio en de cache-logica.
-    res.setHeader('Content-Type', 'application/json');
-
-    const { type, id } = req.params;
-    const [imdbId, season, episode] = id.split(':');
-
-    if (!imdbId) {
-        // Stuur een lege streamlijst terug als de ID ongeldig is.
-        return res.end(JSON.stringify({ streams: [] }));
-    }
-
-    // NU PAS WORDT HET SCRAPEN GESTART
-    const streamSource = await getVidSrcStream(type, imdbId, season, episode);
-
-    let streams = [];
-    if (streamSource) {
-        streams.push({
-            url: streamSource.masterUrl,
-            // Geef een duidelijke titel met de gevonden bron
-            title: `Nepflix - ${streamSource.sourceDomain}`
-        });
-    }
-
-    // Stuur de gevonden stream (of een lege lijst) terug.
-    // De res.end() wrapper hieronder zal de juiste cache-header toevoegen.
-    res.end(JSON.stringify({ streams: streams }));
-});
 
 module.exports = (req, res) => {
     // Voeg CORS headers toe
@@ -45,7 +13,7 @@ module.exports = (req, res) => {
 
     // Onderschep de 'end' functie om de cache-header conditioneel in te stellen.
     const originalEnd = res.end;
-    res.end = function (chunk, encoding) {
+    res.end = function(chunk, encoding) {
         // 'this' verwijst naar het 'res' object.
         const body = chunk ? chunk.toString('utf-8') : '';
 
@@ -56,7 +24,7 @@ module.exports = (req, res) => {
             // SUCCES: Cache voor 6 uur.
             this.setHeader('Cache-Control', 'public, s-maxage=21600, stale-while-revalidate=3600');
         } else {
-            // FOUT, "ZOEK"-LINK of LEGE RESPONS: NIET CACHEN.
+            // FOUT, "RETRY"-LINK of LEGE RESPONS: NIET CACHEN.
             // s-maxage=0 geeft de Vercel CDN de instructie om deze respons niet op te slaan.
             this.setHeader('Cache-Control', 'public, s-maxage=0');
         }
