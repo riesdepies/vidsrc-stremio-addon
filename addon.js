@@ -8,7 +8,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.2.0", // Versie verhoogd vanwege significante wijziging
+    "version": "1.3.0", // Versie verhoogd vanwege significante wijziging
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -60,9 +60,7 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// --- NIEUWE PARALLELLE ZOEKFUNCTIE ---
-
-// Helper-functie die het zoekproces voor één enkel domein uitvoert.
+// Helper-functie die het zoekproces voor één enkel domein uitvoert. (ONGEWIJZIGD)
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
@@ -74,16 +72,13 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     let previousUrl = null;
 
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        // Stop als een ander proces al klaar is of een fatale fout vond.
         if (signal.aborted) return null;
-
-        // Voorkom dubbel werk als een andere zoektocht deze URL al bezoekt.
         if (visitedUrls.has(currentUrl)) return null;
         visitedUrls.add(currentUrl);
 
         try {
             const response = await fetch(currentUrl, {
-                signal, // Koppel het abort-signaal aan de fetch
+                signal,
                 headers: {
                     ...COMMON_HEADERS,
                     'Referer': previousUrl || initialTarget,
@@ -93,7 +88,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             const html = await response.text();
             
-            // Fatale fout: media is nergens beschikbaar. Aborteer alles.
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
                 controller.abort();
                 return null;
@@ -101,7 +95,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
-                // Succes! Aborteer alle andere zoekprocessen.
                 controller.abort();
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
@@ -111,34 +104,54 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
                 previousUrl = currentUrl;
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
             } else {
-                break; // Doodlopend spoor voor dit domein.
+                break;
             }
 
         } catch (error) {
             if (error.name !== 'AbortError') {
                 console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
             }
-            break; // Stop bij een fout.
+            break;
         }
     }
-    return null; // Geen stream gevonden via dit domein.
+    return null;
 }
 
-// Orchestrator-functie die de parallelle race beheert.
+// --- AANGEPASTE ORCHESTRATOR-FUNCTIE ---
+// Orchestrator-functie die de parallelle race beheert met een gespreide, willekeurige start.
 async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
-    const visitedUrls = new Set(); // Gedeelde set om dubbel werk te voorkomen.
+    const visitedUrls = new Set();
+    const searchPromises = [];
+    const STAGGER_DELAY_MS = 200;
 
-    // Start een zoekproces voor elk domein en voeg de promise toe aan een array.
-    const searchPromises = VIDSRC_DOMAINS.map(domain =>
-        searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
-    );
+    // Stap 1: Maak een willekeurige kopie van de domeinlijst (Fisher-Yates shuffle)
+    const shuffledDomains = [...VIDSRC_DOMAINS];
+    for (let i = shuffledDomains.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffledDomains[i], shuffledDomains[j]] = [shuffledDomains[j], shuffledDomains[i]];
+    }
 
-    // Wacht tot alle promises zijn afgerond (resolved of rejected).
+    // Stap 2: Start de zoekprocessen met een vertraging
+    for (const domain of shuffledDomains) {
+        // Stop met het starten van nieuwe zoektochten als het resultaat al is gevonden
+        if (controller.signal.aborted) {
+            break;
+        }
+
+        // Start het zoekproces voor dit domein en voeg de promise toe aan de lijst
+        const promise = searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls);
+        searchPromises.push(promise);
+        
+        // Wacht een korte periode voordat de volgende zoektocht wordt gestart
+        await new Promise(resolve => setTimeout(resolve, STAGGER_DELAY_MS));
+    }
+
+    // Stap 3: Wacht tot alle gestarte zoektochten zijn afgerond
     const results = await Promise.allSettled(searchPromises);
 
-    // Zoek naar het eerste succesvolle resultaat in de afgeronde promises.
+    // Stap 4: Zoek naar het eerste succesvolle resultaat
     for (const result of results) {
         if (result.status === 'fulfilled' && result.value) {
             return result.value; // Dit is het winnende resultaat.
