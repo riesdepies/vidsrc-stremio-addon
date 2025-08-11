@@ -2,74 +2,55 @@
 
 const fetch = require('node-fetch');
 
-// Helper om de request body te parsen
-function parseJSON(req) {
-    return new Promise((resolve, reject) => {
-        let body = '';
-        req.on('data', chunk => {
-            body += chunk.toString();
-        });
-        req.on('end', () => {
-            try {
-                resolve(JSON.parse(body));
-            } catch (error) {
-                reject(new Error('Invalid JSON'));
-            }
-        });
-        req.on('error', (err) => {
-            reject(err);
-        });
-    });
-}
-
+// Exporteer de serverless functie
 module.exports = async (req, res) => {
-    // Sta cross-origin requests toe
+    // Stel CORS headers in voor alle responses
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
 
     // Behandel pre-flight OPTIONS requests
     if (req.method === 'OPTIONS') {
-        return res.status(200).end();
+        return res.status(204).end();
     }
 
-    // Accepteer alleen POST-verzoeken
+    // Accepteer alleen POST requests
     if (req.method !== 'POST') {
-        res.statusCode = 405;
-        res.setHeader('Content-Type', 'application/json');
-        return res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+        res.setHeader('Allow', 'POST');
+        return res.status(405).json({ error: 'Method Not Allowed' });
+    }
+
+    // De body van het POST-verzoek moet de doel-URL en headers bevatten
+    const { targetUrl, headers } = req.body;
+
+    if (!targetUrl) {
+        return res.status(400).json({ error: 'Bad Request: targetUrl is required' });
     }
 
     try {
-        const { targetUrl, fetchOptions } = await parseJSON(req);
-
-        if (!targetUrl) {
-            res.statusCode = 400;
-            res.setHeader('Content-Type', 'application/json');
-            return res.end(JSON.stringify({ error: 'targetUrl is required' }));
-        }
-
-        // Voer de daadwerkelijke fetch uit naar de doel-URL met de meegestuurde opties
-        const proxyResponse = await fetch(targetUrl, fetchOptions);
-
-        // Stuur de headers van het doel antwoord door
-        proxyResponse.headers.forEach((value, name) => {
-            // Voorkom 'Transfer-Encoding' header problemen op Vercel
-            if (name.toLowerCase() !== 'transfer-encoding') {
-                res.setHeader(name, value);
-            }
+        // Voer het daadwerkelijke fetch-verzoek uit namens de addon
+        const response = await fetch(targetUrl, {
+            headers: headers,
+            // Vercel serverless functies hebben een timeout, we respecteren een redelijke limiet
+            signal: AbortSignal.timeout(15000) 
         });
 
-        // Stuur de statuscode van het doel antwoord door
-        res.statusCode = proxyResponse.status;
+        // Haal de body (HTML-tekst) op
+        const body = await response.text();
 
-        // Stream het antwoord body direct door
-        proxyResponse.body.pipe(res);
+        // Stuur de status en de body van de doelwebsite terug naar de addon
+        res.status(200).json({
+            status: response.status,
+            statusText: response.statusText,
+            body: body
+        });
 
     } catch (error) {
-        console.error('[PROXY ERROR]', error);
-        res.statusCode = 500;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'Proxy failed to fetch the request', details: error.message }));
+        // Als de fetch mislukt, stuur een serverfout terug
+        console.error(`[PROXY ERROR] Fout bij fetchen van ${targetUrl}:`, error.message);
+        res.status(502).json({ 
+            error: 'Proxy fetch failed', 
+            details: error.message 
+        });
     }
 };
