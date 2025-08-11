@@ -8,7 +8,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.0", // Versie verhoogd vanwege significante wijziging
+    "version": "1.4.1", // Versie verhoogd vanwege bugfix
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -60,7 +60,8 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// Helper-functie die het zoekproces voor één enkel domein uitvoert. (ONGEWIJZIGD)
+// --- AANGEPASTE HELPER-FUNCTIE ---
+// Het zoekproces voor één domein. De problematische controller.abort() is verwijderd.
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
@@ -72,7 +73,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     let previousUrl = null;
 
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        if (signal.aborted) return null;
+        if (signal.aborted) return null; // Stop als een andere worker succesvol was
         if (visitedUrls.has(currentUrl)) return null;
         visitedUrls.add(currentUrl);
 
@@ -88,14 +89,14 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             const html = await response.text();
             
+            // CORRECTIE: Breek alleen de loop voor DIT domein, aborteer niet de hele operatie.
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
-                controller.abort();
-                return null;
+                break; // Stop met zoeken op dit domein, het is niet beschikbaar.
             }
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
-                controller.abort();
+                controller.abort(); // SUCCES! Aborteer andere workers.
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
 
@@ -111,38 +112,31 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             if (error.name !== 'AbortError') {
                 console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
             }
-            break;
+            break; // Stop met zoeken op dit domein bij een fout.
         }
     }
-    return null;
+    return null; // Geen resultaat gevonden op dit domein.
 }
 
-// --- AANGEPASTE ORCHESTRATOR-FUNCTIE ---
-// Beheert een "worker pool" van maximaal 3 parallelle zoekopdrachten.
+// --- ORCHESTRATOR-FUNCTIE (ongewijzigd) ---
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
     const visitedUrls = new Set();
     const MAX_CONCURRENT_SEARCHES = 3;
 
-    // Stap 1: Maak een willekeurige wachtrij van domeinen
     const domainQueue = [...VIDSRC_DOMAINS];
     for (let i = domainQueue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
-    // We gebruiken een Promise om het uiteindelijke resultaat af te handelen.
     return new Promise(resolve => {
         let activeSearches = 0;
         let resultFound = false;
 
-        // Functie die een nieuwe zoekopdracht start.
         const launchNext = () => {
-            // Stop als resultaat al gevonden is of de wachtrij leeg is.
             if (resultFound || domainQueue.length === 0) {
-                // Als er geen actieve zoekopdrachten meer zijn en de wachtrij leeg is,
-                // betekent dit dat alles is geprobeerd en niets is gevonden.
                 if (activeSearches === 0 && !resultFound) {
                     resolve(null);
                 }
@@ -150,24 +144,20 @@ function getVidSrcStream(type, imdbId, season, episode) {
             }
 
             activeSearches++;
-            const domain = domainQueue.shift(); // Pak het volgende domein uit de wachtrij.
+            const domain = domainQueue.shift(); 
 
             searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
                 .then(result => {
                     activeSearches--;
-
-                    // Als dit de winnende zoekopdracht is, sla het resultaat op.
                     if (result && !resultFound) {
                         resultFound = true;
-                        resolve(result); // Dit stopt de hele operatie.
-                    } else {
-                        // Deze zoekopdracht is klaar, start de volgende uit de wachtrij.
-                        launchNext();
+                        resolve(result);
+                    } else if (!resultFound) {
+                         launchNext();
                     }
                 });
         };
 
-        // Stap 2: Start de initiële workers om de pool te vullen.
         for (let i = 0; i < MAX_CONCURRENT_SEARCHES; i++) {
             launchNext();
         }
