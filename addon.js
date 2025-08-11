@@ -5,14 +5,14 @@ const fetch = require('node-fetch');
 // --- DYNAMISCHE HOST & URLS ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
 const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
-const proxyUrlBase = host.startsWith('http') ? `${host}/api/proxy?url=` : `https://${host}/api/proxy?url=`;
+const proxyUrl = host.startsWith('http') ? `${host}/api/proxy?url=` : `https://${host}/api/proxy?url=`;
 
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.8.0", // Versie verhoogd voor robuuste timeout
+    "version": "1.5.0", // Versie verhoogd vanwege fallback proxy
     "name": "Nepflix",
-    "description": "HLS streams van VidSrc met agressieve timeouts",
+    "description": "HLS streams van VidSrc met proxy fallback",
     "icon": iconUrl,
     "catalogs": [],
     "resources": ["stream"],
@@ -20,68 +20,50 @@ const manifest = {
     "idPrefixes": ["tt"]
 };
 
-// --- CONSTANTEN ---
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 const MAX_REDIRECTS = 5;
-const MAX_ATTEMPTS = 5;
-// --- WIJZIGING: Agressievere timeout om Vercel's 10s limiet voor te zijn ---
-const FETCH_TIMEOUT_MS = 4000; // 4 seconden per poging
-const STAGGER_DELAY_MS = 200;
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
 const COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9'
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Site': 'cross-site',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Dest': 'iframe',
 };
 
-// --- WIJZIGING: Zeer robuuste fetch-functie met Promise.race voor timeouts ---
-async function fetchWithTimeout(url, options) {
-    const { timeout = FETCH_TIMEOUT_MS } = options;
-    const controller = new AbortController();
-    const { signal } = controller;
-
-    // Promise.race zorgt ervoor dat de snelste promise wint.
-    // Ofwel de fetch slaagt, ofwel de timeout promise reject na X milliseconden.
-    return Promise.race([
-        fetch(url, { ...options, signal }),
-        new Promise((_, reject) =>
-            setTimeout(() => {
-                controller.abort();
-                reject(new Error(`Timeout na ${timeout}ms`));
-            }, timeout)
-        )
-    ]);
-}
-
-async function fetchWithRetries(url, options) {
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-            let response;
-            if (attempt === 1) {
-                // Poging 1: Direct
-                response = await fetchWithTimeout(url, options);
-            } else {
-                // Poging 2-5: Via proxy
-                console.log(`[RETRY ${attempt}/${MAX_ATTEMPTS}] Poging via proxy voor ${url}`);
-                const proxiedUrl = proxyUrlBase + encodeURIComponent(url);
-                response = await fetchWithTimeout(proxiedUrl, { headers: options.headers });
-            }
-
-            if (response.ok) {
-                return { response, attempt };
-            }
-            console.log(`[ATTEMPT ${attempt} FAILED] Status ${response.status} voor ${url}`);
-
-        } catch (error) {
-            console.error(`[ATTEMPT ${attempt} FAILED] Error: ${error.message}`);
-            // Als de algehele zoekactie is geannuleerd, stop dan onmiddellijk.
-            if (options.signal && options.signal.aborted) {
-                throw new Error("Operation aborted by orchestrator");
-            }
+// --- NIEUWE HELPER-FUNCTIE: Fetch met proxy fallback ---
+async function fetchWithFallback(url, options) {
+    try {
+        // Poging 1: Directe fetch
+        const directResponse = await fetch(url, options);
+        if (directResponse.ok) {
+            return directResponse;
         }
+        console.log(`[FALLBACK] Directe fetch naar ${url} mislukt met status ${directResponse.status}. Probeert proxy...`);
+    } catch (error) {
+        console.log(`[FALLBACK] Directe fetch naar ${url} gooide een fout: ${error.message}. Probeert proxy...`);
     }
-    throw new Error(`Alle ${MAX_ATTEMPTS} pogingen voor ${url} zijn mislukt.`);
+
+    // Poging 2: Fetch via de proxy
+    // De headers worden meegestuurd naar de proxy, die ze vervolgens doorstuurt.
+    const proxiedUrl = proxyUrl + encodeURIComponent(url);
+    try {
+         const proxyResponse = await fetch(proxiedUrl, options);
+         if (!proxyResponse.ok) {
+            throw new Error(`Proxy reageerde met status ${proxyResponse.status}`);
+         }
+         return proxyResponse;
+    } catch(proxyError) {
+        console.error(`[PROXY FETCH FAILED] Ook de proxy-fetch naar ${url} is mislukt: ${proxyError.message}`);
+        // Gooi de fout door zodat de zoekopdracht voor dit domein stopt.
+        throw proxyError;
+    }
 }
+
 
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
@@ -93,7 +75,13 @@ function findJsIframeSrc(html) {
     const combinedRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
     let match;
     while ((match = combinedRegex.exec(html)) !== null) {
-        if (match[1] && !match[1].split('?')[0].endsWith('.js')) return match[1];
+        const url = match[1];
+        if (url) {
+            const path = url.split('?')[0].split('#')[0];
+            if (!path.endsWith('.js')) {
+                return url;
+            }
+        }
     }
     return null;
 }
@@ -104,8 +92,10 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
+// --- AANGEPASTE `searchDomain` FUNCTIE ---
+// Gebruikt nu de `fetchWithFallback` helper.
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
-    const signal = controller.signal; // Dit is het signaal om de HELE zoekopdracht te stoppen.
+    const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
     if (apiType === 'tv' && season && episode) {
         initialTarget += `/${season}-${episode}`;
@@ -120,10 +110,15 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
         visitedUrls.add(currentUrl);
 
         try {
-            const { response, attempt } = await fetchWithRetries(currentUrl, {
-                signal, // Geef het master-signaal door
-                headers: { ...COMMON_HEADERS, 'Referer': previousUrl || initialTarget }
+            // Gebruik de nieuwe fetch-functie met ingebouwde fallback.
+            const response = await fetchWithFallback(currentUrl, {
+                signal,
+                headers: {
+                    ...COMMON_HEADERS,
+                    'Referer': previousUrl || initialTarget,
+                }
             });
+            // De fallback gooit een error als hij ook mislukt, dus we hoeven niet opnieuw 'ok' te checken.
 
             const html = await response.text();
             
@@ -135,32 +130,39 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
                 controller.abort();
-                return { masterUrl: m3u8Url, sourceDomain: domain, attempt };
+                return { masterUrl: m3u8Url, sourceDomain: domain };
             }
 
             let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
-            } else { break; }
+            } else {
+                break;
+            }
 
         } catch (error) {
-            console.error(`[SEARCH FAILED] Zoektocht voor domein ${domain} gestopt: ${error.message}`);
-            // Gooi geen error meer, maar breek de lus af en laat de functie null retourneren.
-            // Dit voorkomt dat één falend domein alle andere parallelle zoekopdrachten stopt.
+            if (error.name !== 'AbortError') {
+                console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl} (ook na fallback):`, error.message);
+            }
             break;
         }
     }
     return null;
 }
 
+// --- ONGEWIJZIGDE ORCHESTRATOR-FUNCTIE ---
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
     const visitedUrls = new Set();
     const MAX_CONCURRENT_SEARCHES = 3;
 
-    const domainQueue = [...VIDSRC_DOMAINS].sort(() => 0.5 - Math.random());
+    const domainQueue = [...VIDSRC_DOMAINS];
+    for (let i = domainQueue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
+    }
     
     return new Promise(resolve => {
         let activeSearches = 0;
@@ -168,7 +170,9 @@ function getVidSrcStream(type, imdbId, season, episode) {
 
         const launchNext = () => {
             if (resultFound || domainQueue.length === 0) {
-                if (activeSearches === 0 && !resultFound) resolve(null);
+                if (activeSearches === 0 && !resultFound) {
+                    resolve(null);
+                }
                 return;
             }
 
@@ -178,45 +182,38 @@ function getVidSrcStream(type, imdbId, season, episode) {
             searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
                 .then(result => {
                     activeSearches--;
+
                     if (result && !resultFound) {
                         resultFound = true;
                         resolve(result);
-                    } else if (!resultFound) {
+                    } else {
                         launchNext();
                     }
                 });
         };
 
         for (let i = 0; i < MAX_CONCURRENT_SEARCHES; i++) {
-            setTimeout(() => {
-                if (!resultFound) launchNext();
-            }, i * STAGGER_DELAY_MS);
+            launchNext();
         }
     });
 }
 
-function getOrdinalSuffix(n) {
-    if (n === 2) return '2nd';
-    if (n === 3) return '3rd';
-    return `${n}th`;
-}
 
 const builder = new addonBuilder(manifest);
 
 builder.defineStreamHandler(async ({ type, id }) => {
     const [imdbId, season, episode] = id.split(':');
-    if (!imdbId) return Promise.resolve({ streams: [] });
+    if (!imdbId) {
+        return Promise.resolve({ streams: [] });
+    }
 
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
     if (streamSource) {
-        let title = streamSource.sourceDomain;
-        if (streamSource.attempt > 1) {
-            const suffix = getOrdinalSuffix(streamSource.attempt);
-            title += ` (${suffix} try)`;
-        }
-
-        const stream = { url: streamSource.masterUrl, title };
+        const stream = {
+            url: streamSource.masterUrl,
+            title: `[Fallback] ${streamSource.sourceDomain}`
+        };
         return Promise.resolve({ streams: [stream] });
     }
 
