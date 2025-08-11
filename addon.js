@@ -8,7 +8,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.3.1", // Versie verhoogd
+    "version": "1.3.2", // Versie verhoogd
     "name": "Nepflix",
     "description": "HLS streams van VidSrc met robuuste proxy fallback.",
     "icon": iconUrl,
@@ -31,67 +31,76 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-// AANGEPAST: Alle 8 proxies hersteld, met metadata over hoe de respons te verwerken.
 const PROXIES = [
-    // Proxies die rauwe HTML teruggeven
     { name: 'CORSProxy.io', template: 'https://api.corsproxy.io/', needsEncoding: false, responseType: 'raw' },
     { name: 'Codetabs', template: 'https://api.codetabs.com/v1/proxy?quest=', needsEncoding: true, responseType: 'raw' },
     { name: 'corsmirror.com', template: 'https://corsmirror.com/v1?url=', needsEncoding: true, responseType: 'raw' },
     { name: 'Tuananh Worker', template: 'https://cors-proxy.tuananh.workers.dev/?', needsEncoding: false, responseType: 'raw' },
     { name: 'Novadrone Worker', template: 'https://cors-proxy.novadrone16.workers.dev?url=', needsEncoding: true, responseType: 'raw' },
     { name: 'My CORS Proxy', template: 'https://my-cors-proxy-kappa.vercel.app/api/proxy?url=', needsEncoding: true, responseType: 'raw' },
-    
-    // Proxies die de HTML in een JSON-object verpakken
     { name: 'All Origins', template: 'https://api.allorigins.win/raw?url=', needsEncoding: true, responseType: 'json', jsonKey: 'contents' },
     { name: 'Whatever Origin', template: 'https://whateverorigin.org/get?url=', needsEncoding: true, responseType: 'json', jsonKey: 'contents' }
 ];
 
 /**
- * AANGEPAST: Verwerkt zowel rauwe als JSON-verpakte antwoorden op basis van proxy-metadata.
+ * AANGEPAST: Elke proxy-poging heeft nu een individuele timeout om de totale uitvoeringstijd te bewaken.
  * @returns {Promise<string>} De pure HTML-content.
  */
-async function fetchViaCorsProxy(targetUrl, options = {}) {
+async function fetchViaCorsProxy(targetUrl, options = {}, timeout = 5000) {
     const constructProxyUrl = (proxy, url) => {
         const urlPart = proxy.needsEncoding ? encodeURIComponent(url) : url;
         return proxy.template + urlPart;
     };
 
     const fetchPromises = PROXIES.map(proxy => {
-        const proxyUrl = constructProxyUrl(proxy, targetUrl);
         return new Promise(async (resolve, reject) => {
-            try {
+            const proxyUrl = constructProxyUrl(proxy, targetUrl);
+            
+            // Maak een timeout promise die na X seconden faalt.
+            const timeoutPromise = new Promise((_, r) => 
+                setTimeout(() => r(new Error(`Proxy '${proxy.name}' timed out after ${timeout}ms`)), timeout)
+            );
+
+            // De daadwerkelijke fetch-operatie als een promise.
+            const fetchOperation = (async () => {
                 const response = await fetch(proxyUrl, options);
                 if (!response.ok) {
-                    return reject(new Error(`Proxy '${proxy.name}' faalde met status: ${response.status}`));
+                    throw new Error(`Proxy '${proxy.name}' faalde met status: ${response.status}`);
                 }
-
+                
                 console.log(`[PROXY SUCCESS] Data opgehaald via ${proxy.name}`);
                 
                 if (proxy.responseType === 'json') {
                     const data = await response.json();
                     const content = data[proxy.jsonKey];
-                    if (content) {
-                        resolve(content);
-                    } else {
-                        reject(new Error(`Proxy '${proxy.name}' gaf onverwachte JSON-structuur.`));
-                    }
-                } else { // 'raw'
-                    resolve(await response.text());
+                    if (content) return content;
+                    throw new Error(`Proxy '${proxy.name}' gaf onverwachte JSON-structuur.`);
+                } else {
+                    return await response.text();
                 }
+            })();
+
+            try {
+                // Race de fetch-operatie tegen de timeout. De eerste die eindigt, wint.
+                const result = await Promise.race([fetchOperation, timeoutPromise]);
+                resolve(result);
             } catch (error) {
-                reject(new Error(`Proxy '${proxy.name}' netwerkfout: ${error.message}`));
+                // Vang de fout van de race (ofwel van de fetch, ofwel van de timeout)
+                reject(error);
             }
         });
     });
 
     try {
+        // Promise.any wacht op de eerste succesvolle promise uit de lijst.
         return await Promise.any(fetchPromises);
     } catch (error) {
         const allErrors = error.errors ? error.errors.map(e => e.message).join('; ') : 'Onbekende fout';
-        throw new Error(`Alle CORS proxies faalden. Fouten: ${allErrors}`);
+        throw new Error(`Alle CORS proxies faalden of time-out: ${allErrors}`);
     }
 }
 
+// De rest van de code is ongewijzigd.
 async function fetchWithProxyFallback(url, options = {}) {
     try {
         const directResponse = await fetch(url, options);
@@ -108,12 +117,10 @@ async function fetchWithProxyFallback(url, options = {}) {
     }
 }
 
-// --- HELPER FUNCTIES (ongewijzigd) ---
 function extractM3u8Url(htmlContent) { const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/; const match = htmlContent.match(regex); return match ? match[1] : null; }
 function findJsIframeSrc(html) { const combinedRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g; let match; while ((match = combinedRegex.exec(html)) !== null) { const url = match[1]; if (url) { const path = url.split('?')[0].split('#')[0]; if (!path.endsWith('.js')) return url; } } return null; }
 function findHtmlIframeSrc(html) { const staticRegex = /<iframe[^>]+src\s*=\s*["']([^"']+)["']/; const match = html.match(staticRegex); return match ? match[1] : null; }
 
-// --- HOOFDLOGICA (ongewijzigd) ---
 async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     for (const domain of VIDSRC_DOMAINS) {
