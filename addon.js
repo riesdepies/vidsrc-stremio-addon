@@ -1,5 +1,3 @@
-// addon.js
-
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
 
@@ -10,9 +8,9 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.0",
+    "version": "1.4.1", // Versie verhoogd
     "name": "Nepflix",
-    "description": "HLS streams van VidSrc",
+    "description": "HLS streams van VidSrc na een handmatige zoekopdracht.", // Beschrijving aangepast
     "icon": iconUrl,
     "catalogs": [],
     "resources": ["stream"],
@@ -205,21 +203,41 @@ function getVidSrcStream(type, imdbId, season, episode) {
 
 const builder = new addonBuilder(manifest);
 
-// Deze handler wordt nu aangeroepen op de detailpagina.
-// Het start GEEN scrape, maar retourneert een 'knop' die de gebruiker kan indrukken.
 builder.defineStreamHandler(async ({ type, id }) => {
-    // Deze speciale 'stremio://' URL zorgt ervoor dat Stremio, wanneer erop geklikt wordt,
-    // een nieuwe aanroep doet naar een custom endpoint (/search/...) van onze addon.
-    const searchStream = {
-        title: "▶️ Zoek op Nepflix",
-        url: `stremio://${manifest.id}/search/${type}/${id}`
-    };
+    // We voegen een uniek achtervoegsel toe om zoekopdrachten te onderscheiden
+    const isSearchRequest = id.endsWith(':search');
+    const realId = isSearchRequest ? id.replace(':search', '') : id;
 
-    return Promise.resolve({ streams: [searchStream] });
+    const [imdbId, season, episode] = realId.split(':');
+
+    if (!imdbId) {
+        return Promise.resolve({ streams: [] });
+    }
+
+    // Als dit een zoekverzoek is (vanuit de knop), voer dan de scrape-logica uit.
+    if (isSearchRequest) {
+        const streamSource = await getVidSrcStream(type, imdbId, season, episode);
+        if (streamSource) {
+            const stream = {
+                url: streamSource.masterUrl,
+                title: `✅ Gevonden op ${streamSource.sourceDomain}\nKlik om af te spelen`
+            };
+            return Promise.resolve({ streams: [stream] });
+        }
+        // Als er niets wordt gevonden, retourneer een lege array.
+        return Promise.resolve({ streams: [] });
+    } else {
+        // Dit is het eerste verzoek. Toon een "Zoek" knop.
+        // We gebruiken 'externalUrl' om Stremio terug te laten linken naar de addon,
+        // maar nu met de ':search' ID.
+        const searchStream = {
+            name: "Nepflix",
+            title: "Zoek naar streams",
+            description: "Klik hier om het zoeken naar beschikbare streams te starten",
+            externalUrl: `stremio:///stream/${type}/${id}:search`
+        };
+        return Promise.resolve({ streams: [searchStream] });
+    }
 });
 
-// Exporteer de addon-interface EN de scrape-functie, zodat de server-logica deze kan gebruiken.
-module.exports = {
-    addonInterface: builder.getInterface(),
-    getVidSrcStream: getVidSrcStream
-};
+module.exports = builder.getInterface();
