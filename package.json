@@ -3,11 +3,14 @@
   "version": "0.0.1",
   "description": "Fetches VidSrc streaming sources",
   "dependencies": {
-    "node-fetch": "^2.7.0",
+    "node-fetch": "2.7.0",
     "stremio-addon-sdk": "^1.6.10",
     "cheerio": "^1.0.0-rc.12"
   },
   "engines": {
     "node": "18.x"
+  },
+  "overrides": {
+    "node-fetch": "2.7.0"
   }
 }
