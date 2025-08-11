@@ -1,18 +1,16 @@
-// addon.js
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
 
-// --- DYNAMISCHE HOST & URLS ---
+// --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
 const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
-const proxyUrl = host.startsWith('http') ? `${host}/api/proxy?url=` : `https://${host}/api/proxy?url=`;
 
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.5.0", // Versie verhoogd vanwege fallback proxy
+    "version": "1.4.0", // Versie verhoogd vanwege significante wijziging
     "name": "Nepflix",
-    "description": "HLS streams van VidSrc met proxy fallback",
+    "description": "HLS streams van VidSrc",
     "icon": iconUrl,
     "catalogs": [],
     "resources": ["stream"],
@@ -34,36 +32,6 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Mode': 'navigate',
     'Sec-Fetch-Dest': 'iframe',
 };
-
-// --- NIEUWE HELPER-FUNCTIE: Fetch met proxy fallback ---
-async function fetchWithFallback(url, options) {
-    try {
-        // Poging 1: Directe fetch
-        const directResponse = await fetch(url, options);
-        if (directResponse.ok) {
-            return directResponse;
-        }
-        console.log(`[FALLBACK] Directe fetch naar ${url} mislukt met status ${directResponse.status}. Probeert proxy...`);
-    } catch (error) {
-        console.log(`[FALLBACK] Directe fetch naar ${url} gooide een fout: ${error.message}. Probeert proxy...`);
-    }
-
-    // Poging 2: Fetch via de proxy
-    // De headers worden meegestuurd naar de proxy, die ze vervolgens doorstuurt.
-    const proxiedUrl = proxyUrl + encodeURIComponent(url);
-    try {
-         const proxyResponse = await fetch(proxiedUrl, options);
-         if (!proxyResponse.ok) {
-            throw new Error(`Proxy reageerde met status ${proxyResponse.status}`);
-         }
-         return proxyResponse;
-    } catch(proxyError) {
-        console.error(`[PROXY FETCH FAILED] Ook de proxy-fetch naar ${url} is mislukt: ${proxyError.message}`);
-        // Gooi de fout door zodat de zoekopdracht voor dit domein stopt.
-        throw proxyError;
-    }
-}
-
 
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
@@ -92,8 +60,7 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-// --- AANGEPASTE `searchDomain` FUNCTIE ---
-// Gebruikt nu de `fetchWithFallback` helper.
+// Helper-functie die het zoekproces voor één enkel domein uitvoert. (ONGEWIJZIGD)
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
@@ -110,15 +77,14 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
         visitedUrls.add(currentUrl);
 
         try {
-            // Gebruik de nieuwe fetch-functie met ingebouwde fallback.
-            const response = await fetchWithFallback(currentUrl, {
+            const response = await fetch(currentUrl, {
                 signal,
                 headers: {
                     ...COMMON_HEADERS,
                     'Referer': previousUrl || initialTarget,
                 }
             });
-            // De fallback gooit een error als hij ook mislukt, dus we hoeven niet opnieuw 'ok' te checken.
+            if (!response.ok) break;
 
             const html = await response.text();
             
@@ -143,7 +109,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
         } catch (error) {
             if (error.name !== 'AbortError') {
-                console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl} (ook na fallback):`, error.message);
+                console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
             }
             break;
         }
@@ -151,25 +117,32 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     return null;
 }
 
-// --- ONGEWIJZIGDE ORCHESTRATOR-FUNCTIE ---
+// --- AANGEPASTE ORCHESTRATOR-FUNCTIE ---
+// Beheert een "worker pool" van maximaal 3 parallelle zoekopdrachten.
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
     const visitedUrls = new Set();
     const MAX_CONCURRENT_SEARCHES = 3;
 
+    // Stap 1: Maak een willekeurige wachtrij van domeinen
     const domainQueue = [...VIDSRC_DOMAINS];
     for (let i = domainQueue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
+    // We gebruiken een Promise om het uiteindelijke resultaat af te handelen.
     return new Promise(resolve => {
         let activeSearches = 0;
         let resultFound = false;
 
+        // Functie die een nieuwe zoekopdracht start.
         const launchNext = () => {
+            // Stop als resultaat al gevonden is of de wachtrij leeg is.
             if (resultFound || domainQueue.length === 0) {
+                // Als er geen actieve zoekopdrachten meer zijn en de wachtrij leeg is,
+                // betekent dit dat alles is geprobeerd en niets is gevonden.
                 if (activeSearches === 0 && !resultFound) {
                     resolve(null);
                 }
@@ -177,21 +150,24 @@ function getVidSrcStream(type, imdbId, season, episode) {
             }
 
             activeSearches++;
-            const domain = domainQueue.shift(); 
+            const domain = domainQueue.shift(); // Pak het volgende domein uit de wachtrij.
 
             searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
                 .then(result => {
                     activeSearches--;
 
+                    // Als dit de winnende zoekopdracht is, sla het resultaat op.
                     if (result && !resultFound) {
                         resultFound = true;
-                        resolve(result);
+                        resolve(result); // Dit stopt de hele operatie.
                     } else {
+                        // Deze zoekopdracht is klaar, start de volgende uit de wachtrij.
                         launchNext();
                     }
                 });
         };
 
+        // Stap 2: Start de initiële workers om de pool te vullen.
         for (let i = 0; i < MAX_CONCURRENT_SEARCHES; i++) {
             launchNext();
         }
@@ -212,7 +188,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (streamSource) {
         const stream = {
             url: streamSource.masterUrl,
-            title: `[Fallback] ${streamSource.sourceDomain}`
+            title: streamSource.sourceDomain
         };
         return Promise.resolve({ streams: [stream] });
     }
