@@ -4,7 +4,8 @@
   "description": "Fetches VidSrc streaming sources",
   "dependencies": {
     "node-fetch": "^2.7.0",
-    "stremio-addon-sdk": "^1.6.10"
+    "stremio-addon-sdk": "^1.6.10",
+    "@vercel/kv": "^1.0.1"
   },
   "engines": {
     "node": "18.x"
