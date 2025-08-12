@@ -5,10 +5,9 @@ const fetch = require('node-fetch');
 const { createClient } = require("@vercel/kv");
 
 // --- INITIALISEER VERCELL KV CLIENT ---
-// Vercel vult de environment variabelen automatisch in na het koppelen van de database.
+// AANGEPAST: Gebruikt de door Vercel geleverde REDIS_URL variabele.
 const kv = createClient({
-  url: process.env.KV_REST_API_URL,
-  token: process.env.KV_REST_API_TOKEN,
+  url: process.env.REDIS_URL,
 });
 
 // Cache levensduur in seconden (4 uur)
