@@ -1,15 +1,16 @@
-// addon.js
-
 const { addonBuilder } = require("stremio-addon-sdk");
-const fetch = require('node-fetch');
 const { createClient } = require("@vercel/kv");
+// Importeer de proxy-logica direct
+const { executeProxyFetch } = require('./api/proxy.js');
 
 // Cache levensduur in seconden (4 uur)
 const CACHE_TTL_SECONDS = 4 * 60 * 60; 
 
 // --- DYNAMISCHE HOST & ICOON URL ---
-const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
-const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
+// Gebruik de productie-URL van Vercel indien beschikbaar, anders de deployment-URL, anders localhost.
+// Dit zorgt voor een stabiele URL voor het icoon.
+const host = process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || '127.0.0.1:3000';
+const iconUrl = `https://${host}/icon.png`;
 
 // --- MANIFEST ---
 const manifest = {
@@ -41,26 +42,14 @@ const COMMON_HEADERS = {
 
 // --- FUNCTIES ---
 
+// Deze functie roept nu direct de geïmporteerde proxy-logica aan
 async function fetchViaProxy(url, options) {
-    const proxyUrl = host.startsWith('http') ? `${host}/api/proxy` : `https://${host}/api/proxy`;
     try {
-        const proxyRes = await fetch(proxyUrl, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ targetUrl: url, headers: options.headers || {} }), 
-            signal: options.signal 
-        });
-        if (!proxyRes.ok) throw new Error(`Proxy-aanroep mislukt met status: ${proxyRes.status}`);
-        const data = await proxyRes.json();
-        if (data.error) throw new Error(data.details || data.error);
-        return { 
-            ok: data.status >= 200 && data.status < 300, 
-            status: data.status, 
-            statusText: data.statusText, 
-            text: () => Promise.resolve(data.body) 
-        };
+        return await executeProxyFetch(url, options.headers || {});
     } catch (error) {
-        if (error.name !== 'AbortError') console.error(`[PROXY CLIENT ERROR] Fout bij aanroepen van proxy voor ${url}:`, error.message);
+        if (error.name !== 'AbortError') {
+            console.error(`[PROXY CALL ERROR] Fout bij aanroepen van proxy-functie voor ${url}:`, error.message);
+        }
         throw error;
     }
 }
@@ -107,20 +96,23 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
         visitedUrls.add(currentUrl);
         
         try {
+            // De AbortController.signal werkt niet direct op onze custom functie,
+            // maar de timeout in de proxy-functie en de check aan het begin van de loop vangen dit op.
             const response = await fetchViaProxy(currentUrl, { 
-                signal: controller.signal, 
                 headers: { ...COMMON_HEADERS, 'Referer': previousUrl || initialTarget } 
             });
             if (!response.ok) break;
             
             const html = await response.text();
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
+                console.log(`[UNAVAILABLE] Media niet beschikbaar op domein ${domain}`);
                 controller.abort();
                 return null;
             }
             
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
+                console.log(`[SUCCESS] m3u8 gevonden op domein ${domain}`);
                 controller.abort();
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
@@ -130,6 +122,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
                 previousUrl = currentUrl;
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
             } else {
+                console.log(`[STUCK] Geen volgende iframe gevonden op ${currentUrl}`);
                 break;
             }
         } catch (error) {
@@ -139,6 +132,9 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     }
     return null;
 }
+
+// ... de rest van het bestand (scrapeNewVidSrcStream, getVidSrcStreamWithCache, builder) blijft ongewijzigd ...
+// (De ongewijzigde code wordt hier weggelaten voor de beknoptheid, maar u moet het hele bestand gebruiken)
 
 function scrapeNewVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
@@ -175,22 +171,27 @@ function scrapeNewVidSrcStream(type, imdbId, season, episode) {
                         resultFound = true;
                         resolve(result);
                     }
-                    onComplete();
                 }).catch(err => {
+                    // Errors worden al gelogd in de functies
+                }).finally(() => {
                     onComplete();
+                    launchNext(); // Start de volgende zoekopdracht zodra er een plek vrij is
                 });
         };
         
+        // Start maximaal 3 parallelle zoekopdrachten
         for (let i = 0; i < 3; i++) {
             launchNext();
         }
     });
 }
 
-// --- SCRAPING & CACHING LOGICA ---
 async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
     try {
-        const kv = createClient();
+        const kv = createClient({
+            url: process.env.KV_REST_API_URL,
+            token: process.env.KV_REST_API_TOKEN,
+        });
         
         const streamId = `${imdbId}:${season || '0'}:${episode || '0'}`;
         const cacheKey = `stream:${streamId}`;
