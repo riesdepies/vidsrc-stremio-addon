@@ -4,11 +4,7 @@ const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
 const { createClient } = require("@vercel/kv");
 
-// --- INITIALISEER VERCELL KV CLIENT ---
-// AANGEPAST: Gebruikt de door Vercel geleverde REDIS_URL variabele.
-const kv = createClient({
-  url: process.env.REDIS_URL,
-});
+// --- INITIALISATIE IS HIER WEGGEHAALD ---
 
 // Cache levensduur in seconden (4 uur)
 const CACHE_TTL_SECONDS = 4 * 60 * 60; 
@@ -243,6 +239,11 @@ function scrapeNewVidSrcStream(type, imdbId, season, episode) {
 }
 
 async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
+    // AANGEPAST: Initialiseer de client HIER, binnen de async functie.
+    const kv = createClient({
+        url: process.env.REDIS_URL,
+    });
+    
     const streamId = `${imdbId}:${season || '0'}:${episode || '0'}`;
     const cacheKey = `stream:${streamId}`;
 
@@ -267,7 +268,8 @@ async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
         console.log(`[SCRAPE SUCCESS] New stream found for ${streamId}. Storing in cache...`);
         try {
             await kv.set(cacheKey, streamSource, { ex: CACHE_TTL_SECONDS });
-        } catch (err) {
+        } catch (err)
+ {
             console.error(`[KV ERROR] Failed to write to cache:`, err);
         }
     }
