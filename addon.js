@@ -1,5 +1,3 @@
-// addon.js
-
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
 const { createClient } = require("@vercel/kv");
@@ -198,7 +196,8 @@ async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
         const cachedStream = await kv.get(cacheKey);
         if (cachedStream) {
             console.log(`[CACHE HIT] Found in KV cache for ${streamId}`);
-            return cachedStream;
+            // Voeg een 'isCached' vlag toe aan het geretourneerde object
+            return { ...cachedStream, isCached: true };
         }
 
         console.log(`[CACHE MISS] No valid cache for ${streamId}, starting fresh scrape...`);
@@ -207,12 +206,19 @@ async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
         if (streamSource) {
             console.log(`[SCRAPE SUCCESS] New stream found for ${streamId}. Storing in cache...`);
             await kv.set(cacheKey, streamSource, { ex: CACHE_TTL_SECONDS });
+             // Retourneer het object met de 'isCached' vlag op false
+            return { ...streamSource, isCached: false };
         }
-        return streamSource;
+        return null;
 
     } catch (error) {
         console.error('[FATAL KV ERROR] Caching mechanism failed. Scraping without cache.', error);
-        return await scrapeNewVidSrcStream(type, imdbId, season, episode);
+        const streamSource = await scrapeNewVidSrcStream(type, imdbId, season, episode);
+        if (streamSource) {
+            // Geen cache, dus 'isCached' is altijd false hier
+            return { ...streamSource, isCached: false };
+        }
+        return null;
     }
 }
 
@@ -224,12 +230,18 @@ builder.defineStreamHandler(async ({ type, id }) => {
         return Promise.resolve({ streams: [] });
     }
 
+    // streamSource bevat nu ook de 'isCached' vlag
     const streamSource = await getVidSrcStreamWithCache(type, imdbId, season, episode);
 
     if (streamSource && streamSource.masterUrl) {
+        // Bouw de titel dynamisch op basis van of het resultaat gecached was
+        const title = streamSource.isCached
+            ? `${streamSource.sourceDomain} (cached)`
+            : streamSource.sourceDomain;
+
         const stream = {
             url: streamSource.masterUrl,
-            title: `[VidSrc] ${streamSource.sourceDomain}`
+            title: title
         };
         return Promise.resolve({ streams: [stream] });
     }
