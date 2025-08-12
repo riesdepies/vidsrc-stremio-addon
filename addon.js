@@ -198,7 +198,7 @@ async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
         const cachedStream = await kv.get(cacheKey);
         if (cachedStream) {
             console.log(`[CACHE HIT] Found in KV cache for ${streamId}`);
-            return { streamSource: cachedStream, fromCache: true };
+            return cachedStream;
         }
 
         console.log(`[CACHE MISS] No valid cache for ${streamId}, starting fresh scrape...`);
@@ -208,12 +208,11 @@ async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
             console.log(`[SCRAPE SUCCESS] New stream found for ${streamId}. Storing in cache...`);
             await kv.set(cacheKey, streamSource, { ex: CACHE_TTL_SECONDS });
         }
-        return { streamSource: streamSource, fromCache: false };
+        return streamSource;
 
     } catch (error) {
         console.error('[FATAL KV ERROR] Caching mechanism failed. Scraping without cache.', error);
-        const streamSource = await scrapeNewVidSrcStream(type, imdbId, season, episode);
-        return { streamSource: streamSource, fromCache: false };
+        return await scrapeNewVidSrcStream(type, imdbId, season, episode);
     }
 }
 
@@ -225,14 +224,12 @@ builder.defineStreamHandler(async ({ type, id }) => {
         return Promise.resolve({ streams: [] });
     }
 
-    const { streamSource, fromCache } = await getVidSrcStreamWithCache(type, imdbId, season, episode);
+    const streamSource = await getVidSrcStreamWithCache(type, imdbId, season, episode);
 
     if (streamSource && streamSource.masterUrl) {
-        const title = `${streamSource.sourceDomain}${fromCache ? ' (cached)' : ''}`;
-        
         const stream = {
             url: streamSource.masterUrl,
-            title: title
+            title: `[VidSrc] ${streamSource.sourceDomain}`
         };
         return Promise.resolve({ streams: [stream] });
     }
