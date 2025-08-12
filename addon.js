@@ -10,8 +10,6 @@ const CACHE_TTL_SECONDS = 4 * 60 * 60;
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
 const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
-const addonUrl = host.startsWith('http') ? host : `https://${host}`;
-
 
 // --- MANIFEST ---
 const manifest = {
@@ -41,7 +39,7 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-// --- FUNCTIES (onveranderd) ---
+// --- FUNCTIES ---
 
 async function fetchViaProxy(url, options) {
     const proxyUrl = host.startsWith('http') ? `${host}/api/proxy` : `https://${host}/api/proxy`;
@@ -189,7 +187,7 @@ function scrapeNewVidSrcStream(type, imdbId, season, episode) {
     });
 }
 
-// --- SCRAPING & CACHING LOGICA (onveranderd) ---
+// --- SCRAPING & CACHING LOGICA ---
 async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
     try {
         const kv = createClient();
@@ -200,7 +198,7 @@ async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
         const cachedStream = await kv.get(cacheKey);
         if (cachedStream) {
             console.log(`[CACHE HIT] Found in KV cache for ${streamId}`);
-            return cachedStream;
+            return { streamSource: cachedStream, fromCache: true };
         }
 
         console.log(`[CACHE MISS] No valid cache for ${streamId}, starting fresh scrape...`);
@@ -210,77 +208,36 @@ async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
             console.log(`[SCRAPE SUCCESS] New stream found for ${streamId}. Storing in cache...`);
             await kv.set(cacheKey, streamSource, { ex: CACHE_TTL_SECONDS });
         }
-        return streamSource;
+        return { streamSource: streamSource, fromCache: false };
 
     } catch (error) {
         console.error('[FATAL KV ERROR] Caching mechanism failed. Scraping without cache.', error);
-        return await scrapeNewVidSrcStream(type, imdbId, season, episode);
+        const streamSource = await scrapeNewVidSrcStream(type, imdbId, season, episode);
+        return { streamSource: streamSource, fromCache: false };
     }
 }
 
-
 const builder = new addonBuilder(manifest);
 
-// --- AANGEPASTE STREAM HANDLER ---
 builder.defineStreamHandler(async ({ type, id }) => {
-    let [imdbId, season, episode, action] = id.split(':');
-    if (!imdbId) return Promise.resolve({ streams: [] });
-
-    // Als de gebruiker op de "fresh" link heeft geklikt
-    if (action === 'fresh') {
-        try {
-            const kv = createClient();
-            const streamId = `${imdbId}:${season || '0'}:${episode || '0'}`;
-            const cacheKey = `stream:${streamId}`;
-            console.log(`[FORCE FRESH] Verwijder cache voor ${streamId}`);
-            await kv.del(cacheKey); // Verwijder de oude cache
-        } catch (error) {
-            console.error('[KV ERROR] Kon cache niet verwijderen bij force fresh:', error);
-        }
+    const [imdbId, season, episode] = id.split(':');
+    if (!imdbId) {
+        return Promise.resolve({ streams: [] });
     }
-    
-    const streams = [];
-    let kv;
-    try {
-        kv = createClient();
-        const streamId = `${imdbId}:${season || '0'}:${episode || '0'}`;
-        const cacheKey = `stream:${streamId}`;
-        const cachedStream = await kv.get(cacheKey);
 
-        // Als er een cached stream is en we geen 'fresh' actie doen
-        if (cachedStream && action !== 'fresh') {
-            console.log(`[STREAM BUILDER] Bied gecachete stream aan voor ${streamId}`);
-            streams.push({
-                url: cachedStream.masterUrl,
-                title: `[VidSrc] Cached Link\n${cachedStream.sourceDomain}`
-            });
-
-            // Bied ook de optie aan om een nieuwe link te zoeken
-            const freshId = `${imdbId}:${season || ''}:${episode || ''}:fresh`;
-            streams.push({
-                name: "[VidSrc] Probleem?",
-                title: "Klik hier om nieuwe link te zoeken\n(kan traag zijn)",
-                url: `${addonUrl}/stream/${type}/${freshId}.json`
-            });
-            return Promise.resolve({ streams: streams });
-        }
-    } catch(error) {
-        console.error('[KV ERROR] Kon niet lezen uit cache in stream handler:', error);
-    }
-    
-    // Deze code draait als er GEEN cache is, of als action === 'fresh'
-    console.log(`[STREAM BUILDER] Start nieuwe scrape voor ${id}`);
-    const streamSource = await getVidSrcStreamWithCache(type, imdbId, season, episode);
+    const { streamSource, fromCache } = await getVidSrcStreamWithCache(type, imdbId, season, episode);
 
     if (streamSource && streamSource.masterUrl) {
-        streams.push({
+        const title = `${streamSource.sourceDomain}${fromCache ? ' (cached)' : ''}`;
+        
+        const stream = {
             url: streamSource.masterUrl,
-            title: `[VidSrc] Nieuwe Link\n${streamSource.sourceDomain}`
-        });
+            title: title
+        };
+        return Promise.resolve({ streams: [stream] });
     }
 
-    return Promise.resolve({ streams: streams.length > 0 ? streams : [] });
+    return Promise.resolve({ streams: [] });
 });
-
 
 module.exports = builder.getInterface();
