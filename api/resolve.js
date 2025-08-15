@@ -2,9 +2,35 @@ const fetch = require('node-fetch');
 
 const MAX_REDIRECTS = 5;
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
-const visitedUrls = new Set(); // Houd bezochte URLs bij binnen deze ene instantie
+const visitedUrls = new Set(); 
 
-// --- HELPER FUNCTIES (NU IN DE RESOLVER) ---
+// --- HELPER FUNCTIES ---
+
+/**
+ * Zoekt in een HTML-string naar een Base64-gecodeerde bestandsnaam binnen een atob() functie,
+ * decodeert deze en geeft alleen de bestandsnaam terug (zonder het pad).
+ * @param {string} htmlContent De volledige HTML-broncode van de pagina om te doorzoeken.
+ * @returns {string|null} De opgeschoonde bestandsnaam (bijv. 'video.mp4') als deze wordt gevonden, anders null.
+ */
+function extractVidsrcFilename(htmlContent) {
+  const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/;
+  const match = htmlContent.match(regex);
+
+  if (match && match[1]) {
+    const base64String = match[1];
+    try {
+      // Node.js v16+ heeft atob() globaal beschikbaar.
+      const decodedString = atob(base64String);
+      const pathParts = decodedString.split('/');
+      return pathParts[pathParts.length - 1];
+    } catch (e) {
+      console.error("Fout bij het decoderen van de Base64-string:", e.message);
+      return null;
+    }
+  }
+  return null;
+}
+
 function extractM3u8Url(htmlContent) {
     const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
     const match = htmlContent.match(regex);
@@ -51,6 +77,7 @@ module.exports = async (req, res) => {
     let currentUrl = targetUrl;
     let previousUrl = null;
     const initialReferer = `https://${sourceDomain}/`;
+    let foundFilename = null; // Variabele om de gevonden bestandsnaam op te slaan
 
     try {
         for (let step = 1; step <= MAX_REDIRECTS; step++) {
@@ -79,11 +106,24 @@ module.exports = async (req, res) => {
                 console.log(`[RESOLVER] Media is unavailable. Aborting.`);
                 return res.status(499).json({ error: 'Media unavailable' });
             }
+            
+            // Probeer de bestandsnaam te extraheren als we die nog niet hebben
+            if (!foundFilename) {
+                foundFilename = extractVidsrcFilename(html);
+                if (foundFilename) {
+                    console.log(`[RESOLVER] Found filename: ${foundFilename}`);
+                }
+            }
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
                 console.log(`[RESOLVER] Success, found M3U8: ${m3u8Url}`);
-                return res.status(200).json({ masterUrl: m3u8Url, sourceDomain: sourceDomain });
+                // Voeg de gevonden bestandsnaam toe aan de respons
+                return res.status(200).json({ 
+                    masterUrl: m3u8Url, 
+                    sourceDomain: sourceDomain,
+                    filename: foundFilename 
+                });
             }
 
             const nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
