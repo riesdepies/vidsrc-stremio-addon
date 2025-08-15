@@ -33,6 +33,9 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
+// --- AANGEPAST: Helper functie voor pauzes ---
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 // --- AANGEPASTE PROXY FETCH FUNCTIE ---
 async function fetchViaProxy(url, options) {
     const proxyUrl = host.startsWith('http')
@@ -111,7 +114,6 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     let currentUrl = initialTarget;
     let previousUrl = null;
     
-    // TOEGEVOEGD VOOR DEBUGGING
     console.log(`[SEARCH] Start search on domain: ${domain} for ${imdbId}`);
 
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
@@ -124,6 +126,12 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             return null;
         }
         visitedUrls.add(currentUrl);
+        
+        // --- AANGEPAST: 1 seconde pauze tussen opeenvolgende fetch-operaties ---
+        // Sla de pauze over voor de allereerste fetch (step 1)
+        if (step > 1) {
+            await delay(1000);
+        }
 
         try {
             const response = await fetchViaProxy(currentUrl, {
@@ -141,15 +149,15 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             const html = await response.text();
 
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
-                console.log(`[SEARCH] Media unavailable on domain ${domain}. Aborting all searches.`);
-                controller.abort();
+                console.log(`[SEARCH] Media unavailable on domain ${domain}. Aborting search for this domain.`);
+                // We aborteren niet meer de controller omdat we andere domeinen willen proberen
                 return null;
             }
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
                 console.log(`[SUCCESS] Found m3u8 URL on domain ${domain}: ${m3u8Url}`);
-                controller.abort();
+                // We aborteren de controller niet meer, we retourneren gewoon het resultaat
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
 
@@ -174,62 +182,36 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     return null;
 }
 
-function getVidSrcStream(type, imdbId, season, episode) {
+// --- AANGEPAST: Volledig herschreven voor seriële, voorzichtige zoekopdracht ---
+async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
-    const controller = new AbortController();
     const visitedUrls = new Set();
-    const MAX_CONCURRENT_SEARCHES = 3;
 
+    // Maak een willekeurige volgorde van domeinen
     const domainQueue = [...VIDSRC_DOMAINS];
     for (let i = domainQueue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
-    console.log(`[GETSTREAM] Starting stream search for ${imdbId}`);
+    console.log(`[GETSTREAM] Starting cautious stream search for ${imdbId}`);
 
-    return new Promise(resolve => {
-        let activeSearches = 0;
-        let resultFound = false;
+    // Loop serieel door de willekeurige domeinlijst
+    for (const domain of domainQueue) {
+        const controller = new AbortController(); // Nieuwe controller voor elke poging
+        const result = await searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls);
 
-        const onComplete = () => {
-            activeSearches--;
-            if (activeSearches === 0 && !resultFound) {
-                console.log(`[GETSTREAM] All searches completed for ${imdbId}, no stream found.`);
-                resolve(null);
-            }
-        };
-
-        const launchNext = () => {
-            if (resultFound || domainQueue.length === 0) {
-                if(activeSearches === 0 && !resultFound){
-                    console.log(`[GETSTREAM] All searches completed for ${imdbId}, no stream found.`);
-                    resolve(null);
-                }
-                return;
-            }
-
-            activeSearches++;
-            const domain = domainQueue.shift();
-
-            searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
-                .then(result => {
-                    if (result && !resultFound) {
-                        resultFound = true;
-                        console.log(`[GETSTREAM] Final result found for ${imdbId} from domain ${domain}.`);
-                        resolve(result);
-                    }
-                    onComplete();
-                })
-                .catch(err => {
-                    console.error(`[GETSTREAM] Unhandled error in searchDomain for ${domain}:`, err);
-                    onComplete();
-                });
-        };
-        for (let i = 0; i < MAX_CONCURRENT_SEARCHES && i < domainQueue.length; i++) {
-            launchNext();
+        // Als een resultaat is gevonden, stop en retourneer het direct
+        if (result) {
+            console.log(`[GETSTREAM] Final result found for ${imdbId} from domain ${domain}.`);
+            return result;
         }
-    });
+        // Zo niet, gaat de loop door naar het volgende domein
+    }
+
+    // Als de loop voltooid is zonder resultaat
+    console.log(`[GETSTREAM] All domains searched for ${imdbId}, no stream found.`);
+    return null;
 }
 
 
@@ -246,8 +228,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (streamSource) {
         const stream = {
             url: streamSource.masterUrl,
-            // --- AANGEPASTE TITEL ---
-            title: `${streamSource.sourceDomain}`
+            title: `${streamSource.sourceDomain}` // Titel zonder '[VidSrc]'
         };
         return Promise.resolve({ streams: [stream] });
     }
