@@ -1,5 +1,3 @@
-// /api/index.js
-
 const { getRouter } = require('stremio-addon-sdk');
 const addonInterface = require('../addon.js');
 
@@ -20,8 +18,8 @@ module.exports = (req, res) => {
         // Stel alleen een lange cachetijd in als de respons succesvol is (status 200)
         // en daadwerkelijk een stream-URL bevat.
         if (this.statusCode === 200 && body.includes('"url":')) {
-            // SUCCES: Cache voor 5 uur.
-            this.setHeader('Cache-Control', 'public, s-maxage=18000, stale-while-revalidate=3600');
+            // SUCCES: Cache voor 4 uur.
+            this.setHeader('Cache-Control', 'public, s-maxage=14400, stale-while-revalidate=3600');
         } else {
             // FOUT of LEGE RESPONS: NIET CACHEN.
             // Dit zorgt ervoor dat een nieuwe poging de functie opnieuw uitvoert.
