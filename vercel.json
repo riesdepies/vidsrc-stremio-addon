@@ -1,21 +1,8 @@
 {
   "version": 2,
-  "trailingSlash": false,
   "rewrites": [
     {
-      "source": "/manifest.json",
-      "destination": "/api/index.js"
-    },
-    {
-      "source": "/stream/:type/:id.json",
-      "destination": "/api/index.js"
-    },
-    {
-      "source": "/configure",
-      "destination": "/api/index.js"
-    },
-    {
-      "source": "/",
+      "source": "/(.*)",
       "destination": "/api/index.js"
     }
   ]

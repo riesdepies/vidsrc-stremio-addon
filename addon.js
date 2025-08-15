@@ -2,10 +2,6 @@
 
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
-const { createClient } = require("@vercel/kv");
-
-// Cache levensduur in seconden (4 uur)
-const CACHE_TTL_SECONDS = 4 * 60 * 60; 
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
@@ -14,7 +10,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.2",
+    "version": "1.4.0",
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -39,28 +35,43 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-// --- FUNCTIES ---
-
+// --- AANGEPASTE PROXY FETCH FUNCTIE ---
 async function fetchViaProxy(url, options) {
-    const proxyUrl = host.startsWith('http') ? `${host}/api/proxy` : `https://${host}/api/proxy`;
+    const proxyUrl = host.startsWith('http')
+        ? `${host}/api/proxy`
+        : `https://${host}/api/proxy`;
+
     try {
-        const proxyRes = await fetch(proxyUrl, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ targetUrl: url, headers: options.headers || {} }), 
-            signal: options.signal 
+        const proxyRes = await fetch(proxyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                targetUrl: url,
+                headers: options.headers || {}
+            }),
+            signal: options.signal
         });
-        if (!proxyRes.ok) throw new Error(`Proxy-aanroep mislukt met status: ${proxyRes.status}`);
+
+        if (!proxyRes.ok) {
+            throw new Error(`Proxy-aanroep mislukt met status: ${proxyRes.status}`);
+        }
+
         const data = await proxyRes.json();
-        if (data.error) throw new Error(data.details || data.error);
-        return { 
-            ok: data.status >= 200 && data.status < 300, 
-            status: data.status, 
-            statusText: data.statusText, 
-            text: () => Promise.resolve(data.body) 
+
+        if (data.error) {
+            throw new Error(data.details || data.error);
+        }
+
+        return {
+            ok: data.status >= 200 && data.status < 300,
+            status: data.status,
+            statusText: data.statusText,
+            text: () => Promise.resolve(data.body)
         };
     } catch (error) {
-        if (error.name !== 'AbortError') console.error(`[PROXY CLIENT ERROR] Fout bij aanroepen van proxy voor ${url}:`, error.message);
+        if (error.name !== 'AbortError') {
+            console.error(`[PROXY CLIENT ERROR] Fout bij aanroepen van proxy voor ${url}:`, error.message);
+        }
         throw error;
     }
 }
@@ -93,130 +104,136 @@ function findHtmlIframeSrc(html) {
 }
 
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
+    const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
     if (apiType === 'tv' && season && episode) {
         initialTarget += `/${season}-${episode}`;
     }
-    
+
     let currentUrl = initialTarget;
     let previousUrl = null;
     
+    // TOEGEVOEGD VOOR DEBUGGING
+    console.log(`[SEARCH] Start search on domain: ${domain} for ${imdbId}`);
+
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        if (controller.signal.aborted) return null;
-        if (visitedUrls.has(currentUrl)) return null;
+        if (signal.aborted) {
+            console.log(`[SEARCH] Search on ${domain} aborted by controller.`);
+            return null;
+        }
+        if (visitedUrls.has(currentUrl)) {
+            console.log(`[SEARCH] URL already visited, skipping: ${currentUrl}`);
+            return null;
+        }
         visitedUrls.add(currentUrl);
-        
+
         try {
-            const response = await fetchViaProxy(currentUrl, { 
-                signal: controller.signal, 
-                headers: { ...COMMON_HEADERS, 'Referer': previousUrl || initialTarget } 
+            const response = await fetchViaProxy(currentUrl, {
+                signal,
+                headers: {
+                    ...COMMON_HEADERS,
+                    'Referer': previousUrl || initialTarget,
+                }
             });
-            if (!response.ok) break;
-            
+            if (!response.ok) {
+                console.log(`[SEARCH] Step ${step} on ${domain}: Received non-OK status ${response.status} for ${currentUrl}`);
+                break;
+            }
+
             const html = await response.text();
+
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
+                console.log(`[SEARCH] Media unavailable on domain ${domain}. Aborting all searches.`);
                 controller.abort();
                 return null;
             }
-            
+
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
+                console.log(`[SUCCESS] Found m3u8 URL on domain ${domain}: ${m3u8Url}`);
                 controller.abort();
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
-            
+
             let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
+                console.log(`[SEARCH] Step ${step} on ${domain}: Found next iframe, redirecting to: ${currentUrl}`);
             } else {
+                console.log(`[SEARCH] Step ${step} on ${domain}: No m3u8 or next iframe found. Ending search for this domain.`);
                 break;
             }
+
         } catch (error) {
-            if (error.name !== 'AbortError') console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
+            if (error.name !== 'AbortError') {
+                console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
+            }
             break;
         }
     }
+    console.log(`[SEARCH] Finished search on domain ${domain} without finding m3u8.`);
     return null;
 }
 
-function scrapeNewVidSrcStream(type, imdbId, season, episode) {
+function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
     const visitedUrls = new Set();
+    const MAX_CONCURRENT_SEARCHES = 3;
+
     const domainQueue = [...VIDSRC_DOMAINS];
-    
     for (let i = domainQueue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
+    console.log(`[GETSTREAM] Starting stream search for ${imdbId}`);
+
     return new Promise(resolve => {
         let activeSearches = 0;
         let resultFound = false;
-        
+
         const onComplete = () => {
             activeSearches--;
-            if (activeSearches === 0 && !resultFound) resolve(null);
+            if (activeSearches === 0 && !resultFound) {
+                console.log(`[GETSTREAM] All searches completed for ${imdbId}, no stream found.`);
+                resolve(null);
+            }
         };
-        
+
         const launchNext = () => {
             if (resultFound || domainQueue.length === 0) {
-                if (activeSearches === 0 && !resultFound) resolve(null);
+                if(activeSearches === 0 && !resultFound){
+                    console.log(`[GETSTREAM] All searches completed for ${imdbId}, no stream found.`);
+                    resolve(null);
+                }
                 return;
             }
-            
+
             activeSearches++;
             const domain = domainQueue.shift();
-            
+
             searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls)
                 .then(result => {
                     if (result && !resultFound) {
                         resultFound = true;
+                        console.log(`[GETSTREAM] Final result found for ${imdbId} from domain ${domain}.`);
                         resolve(result);
                     }
                     onComplete();
-                }).catch(err => {
+                })
+                .catch(err => {
+                    console.error(`[GETSTREAM] Unhandled error in searchDomain for ${domain}:`, err);
                     onComplete();
                 });
         };
-        
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < MAX_CONCURRENT_SEARCHES && i < domainQueue.length; i++) {
             launchNext();
         }
     });
 }
 
-// --- SCRAPING & CACHING LOGICA ---
-async function getVidSrcStreamWithCache(type, imdbId, season, episode) {
-    try {
-        const kv = createClient();
-        
-        const streamId = `${imdbId}:${season || '0'}:${episode || '0'}`;
-        const cacheKey = `stream:${streamId}`;
-
-        const cachedStream = await kv.get(cacheKey);
-        if (cachedStream) {
-            console.log(`[CACHE HIT] Found in KV cache for ${streamId}`);
-            return { ...cachedStream, fromCache: true };
-        }
-
-        console.log(`[CACHE MISS] No valid cache for ${streamId}, starting fresh scrape...`);
-        const streamSource = await scrapeNewVidSrcStream(type, imdbId, season, episode);
-
-        if (streamSource) {
-            console.log(`[SCRAPE SUCCESS] New stream found for ${streamId}. Storing in cache...`);
-            await kv.set(cacheKey, streamSource, { ex: CACHE_TTL_SECONDS });
-            return { ...streamSource, fromCache: false };
-        }
-        return null;
-
-    } catch (error) {
-        console.error('[FATAL KV ERROR] Caching mechanism failed. Scraping without cache.', error);
-        const streamSource = await scrapeNewVidSrcStream(type, imdbId, season, episode);
-        return streamSource ? { ...streamSource, fromCache: false } : null;
-    }
-}
 
 const builder = new addonBuilder(manifest);
 
@@ -226,16 +243,12 @@ builder.defineStreamHandler(async ({ type, id }) => {
         return Promise.resolve({ streams: [] });
     }
 
-    const streamSource = await getVidSrcStreamWithCache(type, imdbId, season, episode);
+    const streamSource = await getVidSrcStream(type, imdbId, season, episode);
 
-    if (streamSource && streamSource.masterUrl) {
-        const title = streamSource.fromCache 
-            ? `${streamSource.sourceDomain} (cached)` 
-            : streamSource.sourceDomain;
-
+    if (streamSource) {
         const stream = {
             url: streamSource.masterUrl,
-            title: title
+            title: `[VidSrc] ${streamSource.sourceDomain}` // Duidelijkere titel
         };
         return Promise.resolve({ streams: [stream] });
     }
