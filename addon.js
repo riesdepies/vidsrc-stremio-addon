@@ -121,6 +121,7 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
         initialTarget += `/${season}-${episode}`;
     }
 
+    // --- VERBETERDE REFERER VOOR DE EERSTE REQUEST ---
     const initialReferer = `https://${domain}/`;
     let currentUrl = initialTarget;
     let previousUrl = null;
@@ -185,13 +186,12 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     return null;
 }
 
-// --- AANGEPASTE FUNCTIE VOOR PARALLEL ZOEKEN ---
-function getVidSrcStream(type, imdbId, season, episode) {
+async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
     const visitedUrls = new Set();
-    const MAX_CONCURRENT_SEARCHES = 3;
-
+    
+    // --- GENEREER HEADERS VOOR DEZE SPECIFIEKE ZOEKOPDRACHT ---
     const requestHeaders = {
         ...COMMON_HEADERS,
         'User-Agent': getRandomUserAgent()
@@ -203,47 +203,32 @@ function getVidSrcStream(type, imdbId, season, episode) {
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
-    console.log(`[GETSTREAM] Starting parallel search (max ${MAX_CONCURRENT_SEARCHES}) for ${imdbId} with UA: ${requestHeaders['User-Agent']}`);
+    console.log(`[GETSTREAM] Starting sequential stream search for ${imdbId} with UA: ${requestHeaders['User-Agent']}`);
 
-    return new Promise(resolve => {
-        let activeSearches = 0;
-        let resultFound = false;
-
-        const launchNext = () => {
-            if (resultFound || domainQueue.length === 0) {
-                if (activeSearches === 0 && !resultFound) {
-                    console.log(`[GETSTREAM] All domains searched, no stream found.`);
-                    resolve(null);
-                }
-                return;
-            }
-
-            activeSearches++;
-            const domain = domainQueue.shift();
-
-            searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls, requestHeaders)
-                .then(result => {
-                    if (result && !resultFound) {
-                        resultFound = true;
-                        console.log(`[GETSTREAM] Final result found from domain ${domain}.`);
-                        resolve(result);
-                    }
-                })
-                .catch(err => {
-                    if (err.name !== 'AbortError') {
-                        console.error(`[GETSTREAM] Error searching domain ${domain}:`, err.message);
-                    }
-                })
-                .finally(() => {
-                    activeSearches--;
-                    launchNext();
-                });
-        };
-        
-        for (let i = 0; i < MAX_CONCURRENT_SEARCHES && i < VIDSRC_DOMAINS.length; i++) {
-            launchNext();
+    for (const domain of domainQueue) {
+        if (controller.signal.aborted) {
+            console.log(`[GETSTREAM] Search aborted globally. Stopping.`);
+            break;
         }
-    });
+
+        try {
+            // --- GEEF DE DYNAMISCHE HEADERS MEE AAN DE ZOEKFUNCTIE ---
+            const result = await searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls, requestHeaders);
+            
+            if (result) {
+                console.log(`[GETSTREAM] Final result found for ${imdbId} from domain ${domain}.`);
+                return result; 
+            }
+            
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error(`[GETSTREAM] Unhandled error in searchDomain for ${domain}:`, error.message);
+            }
+        }
+    }
+
+    console.log(`[GETSTREAM] All searches completed for ${imdbId}, no stream found.`);
+    return null;
 }
 
 
