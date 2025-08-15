@@ -22,8 +22,21 @@ const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vi
 const MAX_REDIRECTS = 5;
 const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
+// --- LIJST VAN USER-AGENTS OM TE RANDOMISEREN ---
+const USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+];
+
+function getRandomUserAgent() {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+// --- COMMON_HEADERS ZONDER USER-AGENT (WORDT DYNAMISCH TOEGEVOEGD) ---
 const COMMON_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
@@ -101,13 +114,15 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
-async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls) {
+async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls, requestHeaders) {
     const signal = controller.signal;
     let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
     if (apiType === 'tv' && season && episode) {
         initialTarget += `/${season}-${episode}`;
     }
 
+    // --- VERBETERDE REFERER VOOR DE EERSTE REQUEST ---
+    const initialReferer = `https://${domain}/`;
     let currentUrl = initialTarget;
     let previousUrl = null;
     
@@ -115,11 +130,9 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
     for (let step = 1; step <= MAX_REDIRECTS; step++) {
         if (signal.aborted) {
-            console.log(`[SEARCH] Search on ${domain} aborted by controller.`);
             return null;
         }
         if (visitedUrls.has(currentUrl)) {
-            console.log(`[SEARCH] URL already visited, skipping: ${currentUrl}`);
             return null;
         }
         visitedUrls.add(currentUrl);
@@ -128,8 +141,8 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
             const response = await fetchViaProxy(currentUrl, {
                 signal,
                 headers: {
-                    ...COMMON_HEADERS,
-                    'Referer': previousUrl || initialTarget,
+                    ...requestHeaders,
+                    'Referer': previousUrl || initialReferer,
                 }
             });
             if (!response.ok) {
@@ -141,14 +154,14 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
 
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
                 console.log(`[SEARCH] Media unavailable on domain ${domain}. Aborting all searches.`);
-                controller.abort(); // Dit signaal stopt de hoofdlus in getVidSrcStream
+                controller.abort();
                 return null;
             }
 
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
                 console.log(`[SUCCESS] Found m3u8 URL on domain ${domain}: ${m3u8Url}`);
-                controller.abort(); // Optioneel, maar goed om eventuele andere processen te stoppen
+                controller.abort();
                 return { masterUrl: m3u8Url, sourceDomain: domain };
             }
 
@@ -173,49 +186,47 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
     return null;
 }
 
-// --- AANGEPASTE FUNCTIE VOOR SEQUENTIEEL ZOEKEN ---
 async function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
     const visitedUrls = new Set();
-
-    // Maak een willekeurig gesorteerde lijst van domeinen
+    
+    // --- GENEREER HEADERS VOOR DEZE SPECIFIEKE ZOEKOPDRACHT ---
+    const requestHeaders = {
+        ...COMMON_HEADERS,
+        'User-Agent': getRandomUserAgent()
+    };
+    
     const domainQueue = [...VIDSRC_DOMAINS];
     for (let i = domainQueue.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
-    console.log(`[GETSTREAM] Starting sequential stream search for ${imdbId}`);
+    console.log(`[GETSTREAM] Starting sequential stream search for ${imdbId} with UA: ${requestHeaders['User-Agent']}`);
 
-    // Loop door de domeinen, één voor één
     for (const domain of domainQueue) {
-        // Stop de zoektocht als een eerdere poging de "unavailable" melding vond
         if (controller.signal.aborted) {
             console.log(`[GETSTREAM] Search aborted globally. Stopping.`);
             break;
         }
 
         try {
-            // Wacht op het resultaat van het huidige domein
-            const result = await searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls);
+            // --- GEEF DE DYNAMISCHE HEADERS MEE AAN DE ZOEKFUNCTIE ---
+            const result = await searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls, requestHeaders);
             
-            // Als een resultaat is gevonden, retourneer het onmiddellijk en stop de functie
             if (result) {
                 console.log(`[GETSTREAM] Final result found for ${imdbId} from domain ${domain}.`);
                 return result; 
             }
-            // Als resultaat null is, gaat de lus door naar het volgende domein
             
         } catch (error) {
             if (error.name !== 'AbortError') {
                 console.error(`[GETSTREAM] Unhandled error in searchDomain for ${domain}:`, error.message);
             }
-            // Ga door naar het volgende domein, zelfs na een fout
         }
     }
 
-    // Als de lus is voltooid zonder een resultaat te retourneren, is er niets gevonden
     console.log(`[GETSTREAM] All searches completed for ${imdbId}, no stream found.`);
     return null;
 }
