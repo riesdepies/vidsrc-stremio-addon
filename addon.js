@@ -5,10 +5,10 @@ const fetch = require('node-fetch');
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
 const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
 
-// --- MANIFEST (VERSIE 1.5.0) ---
+// --- MANIFEST (VERSIE 1.5.1) ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.5.0",
+    "version": "1.5.1",
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
@@ -19,10 +19,7 @@ const manifest = {
 };
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
-const MAX_REDIRECTS = 5;
-const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
 
-// --- BROWSERPROFIELEN VOOR REALISTISCHE HEADERS ---
 const BROWSER_PROFILES = [
     {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -38,7 +35,6 @@ const BROWSER_PROFILES = [
     },
     {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
-        // Firefox stuurt geen sec-ch-ua headers, dus dit profiel is opzettelijk anders
     }
 ];
 
@@ -56,119 +52,32 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-async function fetchViaProxy(url, options) {
-    const proxyUrl = host.startsWith('http') ? `${host}/api/proxy` : `https://${host}/api/proxy`;
+async function resolveStreamViaProxy(initialTargetUrl, headers, signal) {
+    const resolverUrl = host.startsWith('http') ? `${host}/api/resolve` : `https://${host}/api/resolve`;
     try {
-        const proxyRes = await fetch(proxyUrl, {
+        const response = await fetch(resolverUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ targetUrl: url, headers: options.headers || {} }),
-            signal: options.signal
+            body: JSON.stringify({ initialTargetUrl, headers }),
+            signal
         });
-        if (!proxyRes.ok) throw new Error(`Proxy-aanroep mislukt met status: ${proxyRes.status}`);
-        const data = await proxyRes.json();
-        if (data.error) throw new Error(data.details || data.error);
-        return {
-            ok: data.status >= 200 && data.status < 300,
-            status: data.status,
-            statusText: data.statusText,
-            text: () => Promise.resolve(data.body)
-        };
+        if (!response.ok) {
+            throw new Error(`Resolver proxy-aanroep mislukt met status: ${response.status}`);
+        }
+        return await response.json();
     } catch (error) {
-        if (error.name !== 'AbortError') console.error(`[PROXY CLIENT ERROR] Fout bij aanroepen van proxy voor ${url}:`, error.message);
-        throw error;
-    }
-}
-
-function extractM3u8Url(htmlContent) {
-    const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
-    const match = htmlContent.match(regex);
-    return match ? match[1] : null;
-}
-
-function findJsIframeSrc(html) {
-    const combinedRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
-    let match;
-    while ((match = combinedRegex.exec(html)) !== null) {
-        const url = match[1];
-        if (url) {
-            const path = url.split('?')[0].split('#')[0];
-            if (!path.endsWith('.js')) return url;
+        if (error.name !== 'AbortError') {
+            console.error(`[RESOLVER CLIENT ERROR] Fout bij aanroepen van resolver voor ${initialTargetUrl}:`, error.message);
         }
+        // Retourneer een standaard 'gefaald' object
+        return { success: false, reason: error.name };
     }
-    return null;
-}
-
-function findHtmlIframeSrc(html) {
-    const staticRegex = /<iframe[^>]+src\s*=\s*["']([^"']+)["']/;
-    const match = html.match(staticRegex);
-    return match ? match[1] : null;
-}
-
-async function searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls, requestHeaders) {
-    const signal = controller.signal;
-    let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
-    if (apiType === 'tv' && season && episode) initialTarget += `/${season}-${episode}`;
-    const initialReferer = `https://${domain}/`;
-    let currentUrl = initialTarget;
-    let previousUrl = null;
-    console.log(`[SEARCH] Start search on domain: ${domain} for ${imdbId}`);
-
-    for (let step = 1; step <= MAX_REDIRECTS; step++) {
-        if (signal.aborted) return null;
-        if (visitedUrls.has(currentUrl)) return null;
-        visitedUrls.add(currentUrl);
-
-        try {
-            // --- TOEGEVOEGDE REALISTISCHE VERTRAGING ---
-            if (step > 1) {
-                await new Promise(resolve => setTimeout(resolve, Math.random() * 350 + 150)); // Wacht 150-500ms
-            }
-
-            const response = await fetchViaProxy(currentUrl, {
-                signal,
-                headers: { ...requestHeaders, 'Referer': previousUrl || initialReferer }
-            });
-            if (!response.ok) {
-                console.log(`[SEARCH] Step ${step} on ${domain}: Received non-OK status ${response.status} for ${currentUrl}`);
-                break;
-            }
-            const html = await response.text();
-            if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
-                console.log(`[SEARCH] Media unavailable on domain ${domain}. Aborting all searches.`);
-                controller.abort();
-                return null;
-            }
-            const m3u8Url = extractM3u8Url(html);
-            if (m3u8Url) {
-                console.log(`[SUCCESS] Found m3u8 URL on domain ${domain}: ${m3u8Url}`);
-                controller.abort();
-                return { masterUrl: m3u8Url, sourceDomain: domain };
-            }
-            let nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
-            if (nextIframeSrc) {
-                previousUrl = currentUrl;
-                currentUrl = new URL(nextIframeSrc, currentUrl).href;
-            } else {
-                console.log(`[SEARCH] Step ${step} on ${domain}: No m3u8 or next iframe found. Ending search for this domain.`);
-                break;
-            }
-        } catch (error) {
-            if (error.name !== 'AbortError') console.error(`[ERROR] Fout bij verwerken van domein ${domain} op URL ${currentUrl}:`, error.message);
-            break;
-        }
-    }
-    console.log(`[SEARCH] Finished search on domain ${domain} without finding m3u8.`);
-    return null;
 }
 
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
-    const visitedUrls = new Set();
     const MAX_CONCURRENT_SEARCHES = 3;
-
-    // --- GEBRUIK EEN VOLLEDIG BROWSERPROFIEL ---
     const requestHeaders = { ...COMMON_HEADERS, ...getRandomBrowserProfile() };
     
     const domainQueue = [...VIDSRC_DOMAINS];
@@ -177,31 +86,47 @@ function getVidSrcStream(type, imdbId, season, episode) {
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
-    console.log(`[GETSTREAM] Starting parallel search (max ${MAX_CONCURRENT_SEARCHES}) for ${imdbId} with UA: ${requestHeaders['User-Agent']}`);
+    console.log(`[GETSTREAM] Starting parallel resolving (max ${MAX_CONCURRENT_SEARCHES}) for ${imdbId} with UA: ${requestHeaders['User-Agent']}`);
 
     return new Promise(resolve => {
         let activeSearches = 0;
         let resultFound = false;
+
         const launchNext = () => {
             if (resultFound || domainQueue.length === 0) {
                 if (activeSearches === 0 && !resultFound) resolve(null);
                 return;
             }
+
             activeSearches++;
             const domain = domainQueue.shift();
-            searchDomain(domain, apiType, imdbId, season, episode, controller, visitedUrls, requestHeaders)
+            
+            let initialTargetUrl = `https://${domain}/embed/${apiType}/${imdbId}`;
+            if (apiType === 'tv' && season && episode) initialTargetUrl += `/${season}-${episode}`;
+            
+            resolveStreamViaProxy(initialTargetUrl, requestHeaders, controller.signal)
                 .then(result => {
-                    if (result && !resultFound) {
+                    if (result.success && !resultFound) {
                         resultFound = true;
-                        resolve(result);
+                        controller.abort(); // Annuleer andere lopende requests
+                        console.log(`[GETSTREAM] Final result found from domain ${domain}.`);
+                        resolve({ masterUrl: result.masterUrl, sourceDomain: domain });
+                    } else if (result.reason === 'unavailable' && !resultFound) {
+                        console.log(`[GETSTREAM] Media unavailable on domain ${domain}. Aborting all searches.`);
+                        resultFound = true; // Voorkom dat andere searches doorgaan
+                        controller.abort();
+                        resolve(null);
                     }
                 })
-                .catch(err => { if (err.name !== 'AbortError') console.error(`[GETSTREAM] Error searching domain ${domain}:`, err.message); })
+                .catch(err => {
+                    if (err.name !== 'AbortError') console.error(`[GETSTREAM] Error resolving domain ${domain}:`, err.message);
+                })
                 .finally(() => {
                     activeSearches--;
                     launchNext();
                 });
         };
+        
         for (let i = 0; i < MAX_CONCURRENT_SEARCHES && i < VIDSRC_DOMAINS.length; i++) {
             launchNext();
         }
