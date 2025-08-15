@@ -1,5 +1,3 @@
-// addon.js
-
 const { addonBuilder } = require("stremio-addon-sdk");
 const fetch = require('node-fetch');
 
@@ -248,7 +246,8 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (streamSource) {
         const stream = {
             url: streamSource.masterUrl,
-            title: `[VidSrc] ${streamSource.sourceDomain}` // Duidelijkere titel
+            // --- AANGEPASTE TITEL ---
+            title: `${streamSource.sourceDomain}`
         };
         return Promise.resolve({ streams: [stream] });
     }
