@@ -88,7 +88,12 @@ async function searchDomain(domain, apiType, imdbId, season, episode, controller
         if (data.masterUrl) {
             console.log(`[SUCCESS] Resolver found m3u8 for domain ${domain}`);
             controller.abort();
-            return { masterUrl: data.masterUrl, sourceDomain: data.sourceDomain };
+            // Stuur het volledige resultaatobject door, inclusief de bestandsnaam
+            return { 
+                masterUrl: data.masterUrl, 
+                sourceDomain: data.sourceDomain,
+                filename: data.filename 
+            };
         }
         return null;
     } catch (error) {
@@ -146,7 +151,12 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (!imdbId) return Promise.resolve({ streams: [] });
     const streamSource = await getVidSrcStream(type, imdbId, season, episode);
     if (streamSource) {
-        const stream = { url: streamSource.masterUrl, title: `${streamSource.sourceDomain}` };
+        // Gebruik de gevonden bestandsnaam als titel. Gebruik het domein als fallback.
+        const title = streamSource.filename || `${streamSource.sourceDomain}`;
+        const stream = { 
+            url: streamSource.masterUrl, 
+            title: title
+        };
         return Promise.resolve({ streams: [stream] });
     }
     return Promise.resolve({ streams: [] });
