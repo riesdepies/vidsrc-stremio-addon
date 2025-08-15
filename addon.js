@@ -52,32 +52,65 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-async function resolveStreamViaProxy(initialTargetUrl, headers, signal) {
-    const resolverUrl = host.startsWith('http') ? `${host}/api/resolve` : `https://${host}/api/resolve`;
+async function resolveUrlViaApi(initialTargetUrl, headers, signal) {
+    const resolveUrl = host.startsWith('http') ? `${host}/api/resolve` : `https://${host}/api/resolve`;
     try {
-        const response = await fetch(resolverUrl, {
+        const response = await fetch(resolveUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ initialTargetUrl, headers }),
             signal
         });
         if (!response.ok) {
-            throw new Error(`Resolver proxy-aanroep mislukt met status: ${response.status}`);
+            throw new Error(`Resolver API mislukt met status: ${response.status}`);
         }
         return await response.json();
     } catch (error) {
         if (error.name !== 'AbortError') {
-            console.error(`[RESOLVER CLIENT ERROR] Fout bij aanroepen van resolver voor ${initialTargetUrl}:`, error.message);
+            console.error(`[RESOLVER CLIENT] Fout bij aanroepen van resolver voor ${initialTargetUrl}:`, error.message);
         }
-        // Retourneer een standaard 'gefaald' object
-        return { success: false, reason: error.name };
+        throw error;
     }
+}
+
+async function searchDomain(domain, apiType, imdbId, season, episode, controller, requestHeaders) {
+    const signal = controller.signal;
+    let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
+    if (apiType === 'tv' && season && episode) {
+        initialTarget += `/${season}-${episode}`;
+    }
+
+    console.log(`[SEARCH] Starting resolve process for domain: ${domain}`);
+    
+    try {
+        const result = await resolveUrlViaApi(initialTarget, requestHeaders, signal);
+        
+        if (result.unavailable) {
+            console.log(`[SEARCH] Media unavailable on domain ${domain}. Aborting all searches.`);
+            controller.abort();
+            return null;
+        }
+
+        if (result.masterUrl) {
+            console.log(`[SUCCESS] Found m3u8 URL via resolver for domain ${domain}`);
+            controller.abort(); // Stop andere zoekopdrachten
+            return { masterUrl: result.masterUrl, sourceDomain: domain };
+        }
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            console.error(`[SEARCH] Fout tijdens resolve proces voor domein ${domain}:`, error.message);
+        }
+    }
+    
+    console.log(`[SEARCH] Finished resolve process for domain ${domain} without finding m3u8.`);
+    return null;
 }
 
 function getVidSrcStream(type, imdbId, season, episode) {
     const apiType = type === 'series' ? 'tv' : 'movie';
     const controller = new AbortController();
     const MAX_CONCURRENT_SEARCHES = 3;
+
     const requestHeaders = { ...COMMON_HEADERS, ...getRandomBrowserProfile() };
     
     const domainQueue = [...VIDSRC_DOMAINS];
@@ -86,7 +119,7 @@ function getVidSrcStream(type, imdbId, season, episode) {
         [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
     }
     
-    console.log(`[GETSTREAM] Starting parallel resolving (max ${MAX_CONCURRENT_SEARCHES}) for ${imdbId} with UA: ${requestHeaders['User-Agent']}`);
+    console.log(`[GETSTREAM] Starting parallel search (max ${MAX_CONCURRENT_SEARCHES}) for ${imdbId}`);
 
     return new Promise(resolve => {
         let activeSearches = 0;
@@ -97,36 +130,21 @@ function getVidSrcStream(type, imdbId, season, episode) {
                 if (activeSearches === 0 && !resultFound) resolve(null);
                 return;
             }
-
             activeSearches++;
             const domain = domainQueue.shift();
-            
-            let initialTargetUrl = `https://${domain}/embed/${apiType}/${imdbId}`;
-            if (apiType === 'tv' && season && episode) initialTargetUrl += `/${season}-${episode}`;
-            
-            resolveStreamViaProxy(initialTargetUrl, requestHeaders, controller.signal)
+            searchDomain(domain, apiType, imdbId, season, episode, controller, requestHeaders)
                 .then(result => {
-                    if (result.success && !resultFound) {
+                    if (result && !resultFound) {
                         resultFound = true;
-                        controller.abort(); // Annuleer andere lopende requests
-                        console.log(`[GETSTREAM] Final result found from domain ${domain}.`);
-                        resolve({ masterUrl: result.masterUrl, sourceDomain: domain });
-                    } else if (result.reason === 'unavailable' && !resultFound) {
-                        console.log(`[GETSTREAM] Media unavailable on domain ${domain}. Aborting all searches.`);
-                        resultFound = true; // Voorkom dat andere searches doorgaan
-                        controller.abort();
-                        resolve(null);
+                        resolve(result);
                     }
                 })
-                .catch(err => {
-                    if (err.name !== 'AbortError') console.error(`[GETSTREAM] Error resolving domain ${domain}:`, err.message);
-                })
+                .catch(err => { if (err.name !== 'AbortError') console.error(`[GETSTREAM] Error searching domain ${domain}:`, err.message); })
                 .finally(() => {
                     activeSearches--;
                     launchNext();
                 });
         };
-        
         for (let i = 0; i < MAX_CONCURRENT_SEARCHES && i < VIDSRC_DOMAINS.length; i++) {
             launchNext();
         }
