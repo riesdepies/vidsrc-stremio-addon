@@ -20,6 +20,7 @@ const manifest = {
 
 const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 
+// --- BROWSERPROFIELEN VOOR REALISTISCHE HEADERS ---
 const BROWSER_PROFILES = [
     {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -43,7 +44,7 @@ function getRandomBrowserProfile() {
 }
 
 const COMMON_HEADERS = {
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q-0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
     'Upgrade-Insecure-Requests': '1',
@@ -52,58 +53,50 @@ const COMMON_HEADERS = {
     'Sec-Fetch-Dest': 'iframe',
 };
 
-async function resolveUrlViaApi(initialTargetUrl, headers, signal) {
-    const resolveUrl = host.startsWith('http') ? `${host}/api/resolve` : `https://${host}/api/resolve`;
-    try {
-        const response = await fetch(resolveUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ initialTargetUrl, headers }),
-            signal
-        });
-        if (!response.ok) {
-            throw new Error(`Resolver API mislukt met status: ${response.status}`);
-        }
-        return await response.json();
-    } catch (error) {
-        if (error.name !== 'AbortError') {
-            console.error(`[RESOLVER CLIENT] Fout bij aanroepen van resolver voor ${initialTargetUrl}:`, error.message);
-        }
-        throw error;
-    }
-}
-
 async function searchDomain(domain, apiType, imdbId, season, episode, controller, requestHeaders) {
     const signal = controller.signal;
-    let initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
-    if (apiType === 'tv' && season && episode) {
-        initialTarget += `/${season}-${episode}`;
-    }
+    if (signal.aborted) return null;
 
-    console.log(`[SEARCH] Starting resolve process for domain: ${domain}`);
+    console.log(`[SEARCH] Asking resolver for domain: ${domain}`);
+    const initialTarget = `https://${domain}/embed/${apiType}/${imdbId}${apiType === 'tv' && season && episode ? `/${season}-${episode}` : ''}`;
     
+    const resolverUrl = host.startsWith('http') ? `${host}/api/resolve` : `https://${host}/api/resolve`;
+
     try {
-        const result = await resolveUrlViaApi(initialTarget, requestHeaders, signal);
-        
-        if (result.unavailable) {
-            console.log(`[SEARCH] Media unavailable on domain ${domain}. Aborting all searches.`);
-            controller.abort();
+        const response = await fetch(resolverUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                targetUrl: initialTarget,
+                sourceDomain: domain,
+                headers: requestHeaders
+            }),
+            signal
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            console.log(`[RESOLVER CLIENT] Resolver failed for ${domain} with status ${response.status}: ${errorBody}`);
+            if (response.status === 499) { // Special code for 'Unavailable'
+                 console.log(`[RESOLVER CLIENT] Media unavailable on domain ${domain}. Aborting all searches.`);
+                 controller.abort();
+            }
             return null;
         }
 
-        if (result.masterUrl) {
-            console.log(`[SUCCESS] Found m3u8 URL via resolver for domain ${domain}`);
-            controller.abort(); // Stop andere zoekopdrachten
-            return { masterUrl: result.masterUrl, sourceDomain: domain };
+        const data = await response.json();
+        if (data.masterUrl) {
+            console.log(`[SUCCESS] Resolver found m3u8 for domain ${domain}`);
+            controller.abort();
+            return { masterUrl: data.masterUrl, sourceDomain: data.sourceDomain };
         }
+        return null;
     } catch (error) {
         if (error.name !== 'AbortError') {
-            console.error(`[SEARCH] Fout tijdens resolve proces voor domein ${domain}:`, error.message);
+            console.error(`[RESOLVER CLIENT] Error calling resolver for ${domain}:`, error.message);
         }
+        return null;
     }
-    
-    console.log(`[SEARCH] Finished resolve process for domain ${domain} without finding m3u8.`);
-    return null;
 }
 
 function getVidSrcStream(type, imdbId, season, episode) {
@@ -113,18 +106,13 @@ function getVidSrcStream(type, imdbId, season, episode) {
 
     const requestHeaders = { ...COMMON_HEADERS, ...getRandomBrowserProfile() };
     
-    const domainQueue = [...VIDSRC_DOMAINS];
-    for (let i = domainQueue.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [domainQueue[i], domainQueue[j]] = [domainQueue[j], domainQueue[i]];
-    }
+    const domainQueue = [...VIDSRC_DOMAINS].sort(() => 0.5 - Math.random());
     
-    console.log(`[GETSTREAM] Starting parallel search (max ${MAX_CONCURRENT_SEARCHES}) for ${imdbId}`);
+    console.log(`[GETSTREAM] Starting parallel search (max ${MAX_CONCURRENT_SEARCHES}) for ${imdbId} with UA: ${requestHeaders['User-Agent']}`);
 
     return new Promise(resolve => {
         let activeSearches = 0;
         let resultFound = false;
-
         const launchNext = () => {
             if (resultFound || domainQueue.length === 0) {
                 if (activeSearches === 0 && !resultFound) resolve(null);
