@@ -8,7 +8,7 @@ const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/
 // --- MANIFEST ---
 const manifest = {
     "id": "community.nepflix.ries",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "name": "Nepflix",
     "description": "HLS streams van VidSrc",
     "icon": iconUrl,
