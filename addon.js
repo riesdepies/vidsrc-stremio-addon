@@ -1,5 +1,4 @@
 const { addonBuilder } = require("stremio-addon-sdk");
-const fetch = require('node-fetch');
 
 // --- DYNAMISCHE HOST & ICOON URL ---
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
