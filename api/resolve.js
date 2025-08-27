@@ -1,9 +1,3 @@
-const fetch = require('node-fetch');
-
-const MAX_REDIRECTS = 5;
-const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
-const visitedUrls = new Set(); 
-
 // --- HELPER FUNCTIES ---
 
 /**
@@ -72,6 +66,10 @@ module.exports = async (req, res) => {
     if (!targetUrl || !sourceDomain || !headers) {
         return res.status(400).json({ error: 'Bad Request: targetUrl, sourceDomain, and headers are required' });
     }
+    
+    const MAX_REDIRECTS = 5;
+    const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
+    const visitedUrls = new Set();
 
     console.log(`[RESOLVER] Starting chain for ${targetUrl}`);
     let currentUrl = targetUrl;
