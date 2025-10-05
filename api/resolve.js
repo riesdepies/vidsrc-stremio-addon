@@ -1,28 +1,29 @@
+const cloudscraper = require('cloudscraper');
+
 // --- HELPER FUNCTIES ---
 
 /**
- * Zoekt in een HTML-string naar een Base64-gecodeerde bestandsnaam binnen een atob() functie,
- * decodeert deze en geeft alleen de bestandsnaam terug (zonder het pad).
- * @param {string} htmlContent De volledige HTML-broncode van de pagina om te doorzoeken.
- * @returns {string|null} De opgeschoonde bestandsnaam (bijv. 'video.mp4') als deze wordt gevonden, anders null.
- */
+* Zoekt in een HTML-string naar een Base64-gecodeerde bestandsnaam binnen een atob() functie,
+* decodeert deze en geeft alleen de bestandsnaam terug (zonder het pad).
+* @param {string} htmlContent De volledige HTML-broncode van de pagina om te doorzoeken.
+* @returns {string|null} De opgeschoonde bestandsnaam (bijv. 'video.mp4') als deze wordt gevonden, anders null.
+*/
 function extractVidsrcFilename(htmlContent) {
-  const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/;
-  const match = htmlContent.match(regex);
+    const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/;
+    const match = htmlContent.match(regex);
 
-  if (match && match[1]) {
-    const base64String = match[1];
-    try {
-      // Node.js v16+ heeft atob() globaal beschikbaar.
-      const decodedString = atob(base64String);
-      const pathParts = decodedString.split('/');
-      return pathParts[pathParts.length - 1];
-    } catch (e) {
-      console.error("Fout bij het decoderen van de Base64-string:", e.message);
-      return null;
+    if (match && match[1]) {
+        const base64String = match[1];
+        try {
+            const decodedString = atob(base64String);
+            const pathParts = decodedString.split('/');
+            return pathParts[pathParts.length - 1];
+        } catch (e) {
+            console.error("Fout bij het decoderen van de Base64-string:", e.message);
+            return null;
+        }
     }
-  }
-  return null;
+    return null;
 }
 
 function extractM3u8Url(htmlContent) {
@@ -50,6 +51,48 @@ function findHtmlIframeSrc(html) {
     return match ? match[1] : null;
 }
 
+/**
+ * Voert een fetch-verzoek uit en gebruikt cloudscraper als fallback bij een 403-fout.
+ * @param {string} url De URL om op te halen.
+ * @param {object} options De fetch-opties (inclusief headers).
+ * @returns {Promise<{ok: boolean, status: number, text: function}>} Een object dat lijkt op een Fetch Response.
+ */
+async function fetchWithFallback(url, options) {
+    try {
+        const response = await fetch(url, options);
+
+        // Als de status 403 is, kan dit een Cloudflare-check zijn. Probeer cloudscraper.
+        if (response.status === 403) {
+            console.log(`[RESOLVER] Standaard fetch kreeg status 403 voor ${url}. Fallback naar cloudscraper.`);
+            const body = await cloudscraper({
+                uri: url,
+                headers: options.headers,
+                timeout: 15000
+            });
+            // Simuleer een succesvolle fetch-response
+            return {
+                ok: true,
+                status: 200,
+                text: () => Promise.resolve(body)
+            };
+        }
+        return response;
+    } catch (error) {
+        console.error(`[RESOLVER] Fout tijdens standaard fetch voor ${url}: ${error.message}. Probeert cloudscraper.`);
+        // Probeer cloudscraper als de initiële fetch volledig mislukt.
+        const body = await cloudscraper({
+            uri: url,
+            headers: options.headers,
+            timeout: 15000
+        });
+        return {
+            ok: true,
+            status: 200,
+            text: () => Promise.resolve(body)
+        };
+    }
+}
+
 
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -59,14 +102,22 @@ module.exports = async (req, res) => {
     if (req.method === 'OPTIONS') return res.status(204).end();
     if (req.method !== 'POST') {
         res.setHeader('Allow', 'POST');
-        return res.status(405).json({ error: 'Method Not Allowed' });
+        return res.status(405).json({
+            error: 'Method Not Allowed'
+        });
     }
 
-    const { targetUrl, sourceDomain, headers } = req.body;
+    const {
+        targetUrl,
+        sourceDomain,
+        headers
+    } = req.body;
     if (!targetUrl || !sourceDomain || !headers) {
-        return res.status(400).json({ error: 'Bad Request: targetUrl, sourceDomain, and headers are required' });
+        return res.status(400).json({
+            error: 'Bad Request: targetUrl, sourceDomain, and headers are required'
+        });
     }
-    
+
     const MAX_REDIRECTS = 5;
     const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
     const visitedUrls = new Set();
@@ -80,15 +131,18 @@ module.exports = async (req, res) => {
     try {
         for (let step = 1; step <= MAX_REDIRECTS; step++) {
             if (visitedUrls.has(currentUrl)) {
-                 console.log(`[RESOLVER] URL already visited, breaking loop: ${currentUrl}`);
-                 break;
+                console.log(`[RESOLVER] URL already visited, breaking loop: ${currentUrl}`);
+                break;
             }
             visitedUrls.add(currentUrl);
 
-            const finalHeaders = { ...headers, 'Referer': previousUrl || initialReferer };
+            const finalHeaders = { ...headers,
+                'Referer': previousUrl || initialReferer
+            };
             delete finalHeaders['host'];
 
-            const response = await fetch(currentUrl, {
+            // Gebruik de nieuwe functie met fallback-mechanisme
+            const response = await fetchWithFallback(currentUrl, {
                 headers: finalHeaders,
                 signal: AbortSignal.timeout(15000)
             });
@@ -97,14 +151,16 @@ module.exports = async (req, res) => {
                 console.log(`[RESOLVER] Fetch failed for ${currentUrl} with status ${response.status}`);
                 break;
             }
-            
+
             const html = await response.text();
 
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
                 console.log(`[RESOLVER] Media is unavailable. Aborting.`);
-                return res.status(499).json({ error: 'Media unavailable' });
+                return res.status(499).json({
+                    error: 'Media unavailable'
+                });
             }
-            
+
             // Probeer de bestandsnaam te extraheren als we die nog niet hebben
             if (!foundFilename) {
                 foundFilename = extractVidsrcFilename(html);
@@ -117,10 +173,10 @@ module.exports = async (req, res) => {
             if (m3u8Url) {
                 console.log(`[RESOLVER] Success, found M3U8: ${m3u8Url}`);
                 // Voeg de gevonden bestandsnaam toe aan de respons
-                return res.status(200).json({ 
-                    masterUrl: m3u8Url, 
+                return res.status(200).json({
+                    masterUrl: m3u8Url,
                     sourceDomain: sourceDomain,
-                    filename: foundFilename 
+                    filename: foundFilename
                 });
             }
 
@@ -128,18 +184,23 @@ module.exports = async (req, res) => {
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
-                 console.log(`[RESOLVER] Found next iframe, redirecting to: ${currentUrl}`);
+                console.log(`[RESOLVER] Found next iframe, redirecting to: ${currentUrl}`);
             } else {
                 console.log('[RESOLVER] No more iframes found.');
                 break;
             }
         }
-        
+
         console.log(`[RESOLVER] Chain finished without result for ${targetUrl}`);
-        return res.status(404).json({ error: 'M3U8 not found in chain' });
+        return res.status(404).json({
+            error: 'M3U8 not found in chain'
+        });
 
     } catch (error) {
         console.error(`[RESOLVER ERROR] Error during fetch chain for ${targetUrl}:`, error.message);
-        return res.status(502).json({ error: 'Proxy fetch failed', details: error.message });
+        return res.status(502).json({
+            error: 'Proxy fetch failed',
+            details: error.message
+        });
     }
 };
