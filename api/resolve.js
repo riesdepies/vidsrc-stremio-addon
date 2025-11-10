@@ -17,7 +17,7 @@ function extractVidsrcFilename(htmlContent) {
             const pathParts = decodedString.split('/');
             return pathParts[pathParts.length - 1];
         } catch (e) {
-            console.error("Fout bij het decoderen van de Base64-string:", e.message);
+            console.error("Fout bij het decoderen van de Base64-string (filename):", e.message);
             return null;
         }
     }
@@ -25,42 +25,40 @@ function extractVidsrcFilename(htmlContent) {
 }
 
 /**
- * VERBETERDE FUNCTIE
- * Extraheert een M3U8 URL uit HTML-content.
- * Deze functie zoekt nu op drie manieren:
- * 1. Naar Base64-gecodeerde strings in atob() calls die een M3U8-link bevatten.
- * 2. Naar M3U8 links binnen JavaScript variabelen zoals 'file:"..."' of 'source:"..."'.
- * 3. Naar kale M3U8 links in de tekst.
+ * Extraheert een M3U8 URL uit HTML-content (platte tekst).
  * @param {string} htmlContent De HTML om te doorzoeken.
  * @returns {string|null} De gevonden M3U8 URL of null.
  */
 function extractM3u8Url(htmlContent) {
-    // 1. Zoek naar alle Base64-gecodeerde strings en decodeer ze.
-    const atobRegex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+    const regex = /(?:file|source)\s*:\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/;
+    const match = htmlContent.match(regex);
+    return match ? match[1] : htmlContent.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/)?.[0] || null;
+}
+
+/**
+ * NIEUWE FUNCTIE
+ * Zoekt naar base64-gecodeerde strings in atob() functies, decodeert ze
+ * en retourneert de eerste die een .m3u8 link blijkt te zijn.
+ * @param {string} htmlContent De HTML om te doorzoeken.
+ * @returns {string|null} De gevonden en gedecodeerde M3U8 URL of null.
+ */
+function extractEncodedM3u8Url(htmlContent) {
+    const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
     let match;
-    while ((match = atobRegex.exec(htmlContent)) !== null) {
+    while ((match = regex.exec(htmlContent)) !== null) {
+        const base64String = match[1];
         try {
-            const decodedString = atob(match[1]);
-            // Als de gedecodeerde string een M3U8-link is, hebben we hem.
+            const decodedString = atob(base64String);
+            // Controleer of de gedecodeerde string een M3U8 URL is
             if (decodedString.includes('.m3u8')) {
-                // Soms zit er nog rommel omheen, dus extraheer de URL zelf.
-                const urlMatch = decodedString.match(/(https?:\/\/[^\s'"]+\.m3u8[^\s'"]*)/);
-                if (urlMatch) return urlMatch[0];
+                console.log('[RESOLVER] Decoded string is a valid M3U8 URL!');
+                return decodedString;
             }
         } catch (e) {
-            // Negeer decodeerfouten, ga door naar de volgende.
+            // Negeer decodeerfouten, het was waarschijnlijk een andere base64 string
         }
     }
-
-    // 2. Als dat niet lukt, zoek naar 'file:"..."' of 'source:"..."'
-    const sourceRegex = /(?:file|source)\s*:\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/;
-    const sourceMatch = htmlContent.match(sourceRegex);
-    if (sourceMatch) return sourceMatch[1];
-
-    // 3. Als laatste redmiddel, zoek naar een kale M3U8 link.
-    const directRegex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
-    const directMatch = htmlContent.match(directRegex);
-    return directMatch ? directMatch[0] : null;
+    return null;
 }
 
 
@@ -139,7 +137,7 @@ module.exports = async (req, res) => {
 
             if (!response.ok) {
                 console.log(`[RESOLVER] Fetch failed for ${currentUrl} with status ${response.status}`);
-                break; 
+                return res.status(404).json({ error: `Fetch failed for ${currentUrl} with status ${response.status}` });
             }
 
             const html = await response.text();
@@ -156,7 +154,9 @@ module.exports = async (req, res) => {
                 }
             }
 
-            const m3u8Url = extractM3u8Url(html);
+            // AANGEPASTE LOGICA: Probeer beide extractiemethodes
+            let m3u8Url = extractM3u8Url(html) || extractEncodedM3u8Url(html);
+
             if (m3u8Url) {
                 console.log(`[RESOLVER] Success, found M3U8: ${m3u8Url}`);
                 return res.status(200).json({
@@ -184,6 +184,4 @@ module.exports = async (req, res) => {
         console.error(`[RESOLVER ERROR] Error during fetch chain for ${targetUrl}:`, error.message);
         return res.status(502).json({ error: 'Proxy fetch failed', details: error.message });
     }
-};```
-
-Vervang de inhoud van `api/resolve.js` met deze nieuwe code en deploy opnieuw. Dit zou de laatste hindernis moeten zijn. De nieuwe `extractM3u8Url` is robuuster en zou de verborgen link nu moeten kunnen vinden.
+};
