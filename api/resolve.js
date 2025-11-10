@@ -13,7 +13,6 @@ function extractVidsrcFilename(htmlContent) {
     if (match && match[1]) {
         const base64String = match[1];
         try {
-            // Node.js v16+ heeft atob() globaal beschikbaar.
             const decodedString = atob(base64String);
             const pathParts = decodedString.split('/');
             return pathParts[pathParts.length - 1];
@@ -26,30 +25,29 @@ function extractVidsrcFilename(htmlContent) {
 }
 
 /**
- * AANGEPASTE FUNCTIE
  * Extraheert een M3U8 URL uit HTML-content.
  * Zoekt zowel naar directe links als naar links binnen JavaScript-variabelen zoals 'file:' of 'source:'.
  * @param {string} htmlContent De HTML om te doorzoeken.
  * @returns {string|null} De gevonden M3U8 URL of null.
  */
 function extractM3u8Url(htmlContent) {
-    // Regex die zoekt naar 'file:"..."' of 'source:"..."' en de M3U8 URL eruit haalt.
     const regex = /(?:file|source)\s*:\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/;
     const match = htmlContent.match(regex);
-    // Als de eerste regex slaagt, geef de URL terug (de eerste capture group).
-    // Zo niet, probeer de oude, simpelere regex voor het geval er toch een directe link is.
     return match ? match[1] : htmlContent.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/)?.[0] || null;
 }
 
 
 function findJsIframeSrc(html) {
-    const combinedRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
+    // Deze regex vindt bronnen die dynamisch in JS worden ingesteld, zoals in de cloudnestra pagina.
+    const combinedRegex = /(?:src|source)\s*:\s*["']([^"']+)["']/g;
     let match;
     while ((match = combinedRegex.exec(html)) !== null) {
         const url = match[1];
         if (url) {
+            // Zorg ervoor dat we geen .js bestanden of andere ongewenste links pakken.
+            // Een iframe src zal doorgaans geen extensie hebben of eindigen op .php/.html
             const path = url.split('?')[0].split('#')[0];
-            if (!path.endsWith('.js')) return url;
+            if (!path.endsWith('.js') && url.startsWith('/')) return url;
         }
     }
     return null;
@@ -86,7 +84,8 @@ module.exports = async (req, res) => {
     let currentUrl = targetUrl;
     let previousUrl = null;
     const initialReferer = `https://${sourceDomain}/`;
-    let foundFilename = null; // Variabele om de gevonden bestandsnaam op te slaan
+    let foundFilename = null;
+    let cookies = null; // Variabele om cookies op te slaan
 
     try {
         for (let step = 1; step <= MAX_REDIRECTS; step++) {
@@ -99,14 +98,27 @@ module.exports = async (req, res) => {
             const finalHeaders = { ...headers, 'Referer': previousUrl || initialReferer };
             delete finalHeaders['host'];
 
+            // Voeg de opgeslagen cookies toe aan de request header
+            if (cookies) {
+                finalHeaders['Cookie'] = cookies;
+            }
+
             const response = await fetch(currentUrl, {
                 headers: finalHeaders,
                 signal: AbortSignal.timeout(15000)
             });
+            
+            // Sla de 'set-cookie' header op voor de volgende request
+            const setCookieHeader = response.headers.get('set-cookie');
+            if (setCookieHeader) {
+                cookies = setCookieHeader;
+                console.log('[RESOLVER] Cookie captured.');
+            }
 
             if (!response.ok) {
                 console.log(`[RESOLVER] Fetch failed for ${currentUrl} with status ${response.status}`);
-                break;
+                // Stop de loop als de status niet ok is (bijv. 404).
+                return res.status(404).json({ error: `Fetch failed for ${currentUrl} with status ${response.status}` });
             }
 
             const html = await response.text();
@@ -116,7 +128,6 @@ module.exports = async (req, res) => {
                 return res.status(499).json({ error: 'Media unavailable' });
             }
 
-            // Probeer de bestandsnaam te extraheren als we die nog niet hebben
             if (!foundFilename) {
                 foundFilename = extractVidsrcFilename(html);
                 if (foundFilename) {
@@ -127,7 +138,6 @@ module.exports = async (req, res) => {
             const m3u8Url = extractM3u8Url(html);
             if (m3u8Url) {
                 console.log(`[RESOLVER] Success, found M3U8: ${m3u8Url}`);
-                // Voeg de gevonden bestandsnaam toe aan de respons
                 return res.status(200).json({
                     masterUrl: m3u8Url,
                     sourceDomain: sourceDomain,
@@ -141,7 +151,7 @@ module.exports = async (req, res) => {
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
                 console.log(`[RESOLVER] Found next iframe, redirecting to: ${currentUrl}`);
             } else {
-                console.log('[RESOLVER] No more iframes found.');
+                console.log('[RESOLVER] No more iframes or M3U8 found.');
                 break;
             }
         }
