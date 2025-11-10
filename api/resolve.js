@@ -1,61 +1,69 @@
 // --- HELPER FUNCTIES ---
 
-/**
-* Zoekt in een HTML-string naar een Base64-gecodeerde bestandsnaam binnen een atob() functie,
-* decodeert deze en geeft alleen de bestandsnaam terug (zonder het pad).
-* @param {string} htmlContent De volledige HTML-broncode van de pagina om te doorzoeken.
-* @returns {string|null} De opgeschoonde bestandsnaam (bijv. 'video.mp4') als deze wordt gevonden, anders null.
-*/
 function extractVidsrcFilename(htmlContent) {
     const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/;
     const match = htmlContent.match(regex);
-
     if (match && match[1]) {
-        const base64String = match[1];
         try {
-            const decodedString = atob(base64String);
+            const decodedString = atob(match[1]);
             const pathParts = decodedString.split('/');
             return pathParts[pathParts.length - 1];
         } catch (e) {
-            console.error("Fout bij het decoderen van de Base64-string (filename):", e.message);
+            console.error("Fout bij decoderen (filename):", e.message);
             return null;
         }
     }
     return null;
 }
 
-/**
- * Extraheert een M3U8 URL uit HTML-content (platte tekst).
- * @param {string} htmlContent De HTML om te doorzoeken.
- * @returns {string|null} De gevonden M3U8 URL of null.
- */
 function extractM3u8Url(htmlContent) {
     const regex = /(?:file|source)\s*:\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/;
     const match = htmlContent.match(regex);
     return match ? match[1] : htmlContent.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/)?.[0] || null;
 }
 
-/**
- * NIEUWE FUNCTIE
- * Zoekt naar base64-gecodeerde strings in atob() functies, decodeert ze
- * en retourneert de eerste die een .m3u8 link blijkt te zijn.
- * @param {string} htmlContent De HTML om te doorzoeken.
- * @returns {string|null} De gevonden en gedecodeerde M3U8 URL of null.
- */
 function extractEncodedM3u8Url(htmlContent) {
     const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
     let match;
     while ((match = regex.exec(htmlContent)) !== null) {
-        const base64String = match[1];
         try {
-            const decodedString = atob(base64String);
-            // Controleer of de gedecodeerde string een M3U8 URL is
+            const decodedString = atob(match[1]);
             if (decodedString.includes('.m3u8')) {
-                console.log('[RESOLVER] Decoded string is a valid M3U8 URL!');
                 return decodedString;
             }
-        } catch (e) {
-            // Negeer decodeerfouten, het was waarschijnlijk een andere base64 string
+        } catch (e) { /* Negeer */ }
+    }
+    return null;
+}
+
+/**
+ * AANGEPASTE FUNCTIE
+ * Zoekt naar een obfuscated/packed JavaScript blok (eval) en zoekt daarbinnen
+ * naar een base64-gecodeerde string die de M3U8-link bevat.
+ * @param {string} htmlContent De volledige HTML om te doorzoeken.
+ * @returns {string|null} De gevonden en gedecodeerde M3U8 URL of null.
+ */
+function extractFromPackedJs(htmlContent) {
+    // Regex om het hele 'eval(function(p,a,c,k,e,d){...})' blok te vinden.
+    // De 's' flag zorgt ervoor dat '.' ook newlines meepakt.
+    const packedRegex = /(eval\(function\(p,a,c,k,e,d\)\{.*?\}\\)\))/s;
+    const packedMatch = htmlContent.match(packedRegex);
+
+    if (packedMatch && packedMatch[0]) {
+        console.log('[RESOLVER] GEPACKT JS-BLOK GEVONDEN. AAN HET ZOEKEN...');
+        const scriptBlock = packedMatch[0];
+        
+        // Nu, zoek binnen dit blok naar base64 strings
+        const base64Regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+        let match;
+        while ((match = base64Regex.exec(scriptBlock)) !== null) {
+            try {
+                const decodedString = atob(match[1]);
+                if (decodedString.includes('.m3u8')) {
+                    console.log('[RESOLVER] SUCCES! M3U8 gevonden in gepakt blok.');
+                    return decodedString;
+                }
+            } catch (e) { /* Negeer decodeerfouten */ }
         }
     }
     return null;
@@ -67,9 +75,9 @@ function findJsIframeSrc(html) {
     let match;
     while ((match = combinedRegex.exec(html)) !== null) {
         const url = match[1];
-        if (url) {
+        if (url && url.startsWith('/')) {
             const path = url.split('?')[0].split('#')[0];
-            if (!path.endsWith('.js') && url.startsWith('/')) return url;
+            if (!path.endsWith('.js')) return url;
         }
     }
     return null;
@@ -80,7 +88,6 @@ function findHtmlIframeSrc(html) {
     const match = html.match(staticRegex);
     return match ? match[1] : null;
 }
-
 
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -112,23 +119,15 @@ module.exports = async (req, res) => {
     try {
         for (let step = 1; step <= MAX_REDIRECTS; step++) {
             if (visitedUrls.has(currentUrl)) {
-                console.log(`[RESOLVER] URL already visited, breaking loop: ${currentUrl}`);
                 break;
             }
             visitedUrls.add(currentUrl);
 
             const finalHeaders = { ...headers, 'Referer': previousUrl || initialReferer };
             delete finalHeaders['host'];
+            if (cookies) finalHeaders['Cookie'] = cookies;
 
-            if (cookies) {
-                finalHeaders['Cookie'] = cookies;
-            }
-
-            const response = await fetch(currentUrl, {
-                headers: finalHeaders,
-                signal: AbortSignal.timeout(15000)
-            });
-            
+            const response = await fetch(currentUrl, { headers: finalHeaders, signal: AbortSignal.timeout(15000) });
             const setCookieHeader = response.headers.get('set-cookie');
             if (setCookieHeader) {
                 cookies = setCookieHeader;
@@ -137,33 +136,26 @@ module.exports = async (req, res) => {
 
             if (!response.ok) {
                 console.log(`[RESOLVER] Fetch failed for ${currentUrl} with status ${response.status}`);
-                return res.status(404).json({ error: `Fetch failed for ${currentUrl} with status ${response.status}` });
+                return res.status(404).json({ error: `Fetch failed with status ${response.status}` });
             }
 
             const html = await response.text();
 
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
-                console.log(`[RESOLVER] Media is unavailable. Aborting.`);
                 return res.status(499).json({ error: 'Media unavailable' });
             }
 
             if (!foundFilename) {
                 foundFilename = extractVidsrcFilename(html);
-                if (foundFilename) {
-                    console.log(`[RESOLVER] Found filename: ${foundFilename}`);
-                }
+                if (foundFilename) console.log(`[RESOLVER] Found filename: ${foundFilename}`);
             }
 
-            // AANGEPASTE LOGICA: Probeer beide extractiemethodes
-            let m3u8Url = extractM3u8Url(html) || extractEncodedM3u8Url(html);
+            // Probeer alle methodes in volgorde van simpel naar complex
+            let m3u8Url = extractM3u8Url(html) || extractEncodedM3u8Url(html) || extractFromPackedJs(html);
 
             if (m3u8Url) {
                 console.log(`[RESOLVER] Success, found M3U8: ${m3u8Url}`);
-                return res.status(200).json({
-                    masterUrl: m3u8Url,
-                    sourceDomain: sourceDomain,
-                    filename: foundFilename
-                });
+                return res.status(200).json({ masterUrl: m3u8Url, sourceDomain: sourceDomain, filename: foundFilename });
             }
 
             const nextIframeSrc = findHtmlIframeSrc(html) || findJsIframeSrc(html);
