@@ -3,7 +3,8 @@
   "version": "0.0.1",
   "description": "Fetches VidSrc streaming sources",
   "dependencies": {
-    "stremio-addon-sdk": "^1.6.10"
+    "stremio-addon-sdk": "^1.6.10",
+    "vm2": "^3.9.19"
   },
   "engines": {
     "node": "22.x"
