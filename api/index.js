@@ -2,14 +2,13 @@ const { addonBuilder, getRouter } = require("stremio-addon-sdk");
 const url = require('url');
 
 // --- DIAGNOSE FUNCTIE ---
-// Deze functie voert de volledige resolve-keten uit en geeft de HTML van de laatste pagina terug.
 async function getFinalHtml(imdbId) {
     console.log(`[DIAGNOSE] Starten voor IMDb ID: ${imdbId}`);
     const targetUrl = `https://vsrc.su/embed/movie/${imdbId}`;
     const sourceDomain = 'vsrc.su';
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q-0.9,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
     };
 
@@ -76,19 +75,19 @@ async function getFinalHtml(imdbId) {
 
 
 // --- STREMIO ADDON LOGICA ---
-// Deze logica is momenteel "uitgeschakeld" door de router hieronder, maar blijft hier voor later.
 const manifest = {
     "id": "community.nepflix.ries.diag",
     "version": "2.0.0",
     "name": "Nepflix (Diagnose Modus)",
     "description": "HLS streams van VidSrc",
+    "icon": "/icon.png", // Toegevoegd voor volledigheid
+    "catalogs": [],      // DEZE REGEL WAS DE OORZAAK VAN DE CRASH
     "resources": ["stream"],
     "types": ["movie", "series"],
     "idPrefixes": ["tt"]
 };
 const builder = new addonBuilder(manifest);
 builder.defineStreamHandler(async ({ type, id }) => {
-    // Deze handler wordt momenteel niet aangeroepen, maar is klaar voor gebruik.
     return Promise.resolve({ streams: [] });
 });
 const addonInterface = builder.getInterface();
@@ -96,11 +95,9 @@ const router = getRouter(addonInterface);
 
 
 // --- HOOFD ROUTER ---
-// Dit is het enige dat wordt uitgevoerd wanneer de functie wordt aangeroepen.
 module.exports = async (req, res) => {
     const parsedUrl = url.parse(req.url, true);
 
-    // ROUTE 1: De diagnose-tool
     if (parsedUrl.pathname.startsWith('/api/gethtml')) {
         const imdbId = parsedUrl.query.id;
         if (!imdbId || !imdbId.startsWith('tt')) {
@@ -115,10 +112,9 @@ module.exports = async (req, res) => {
         return res.end(finalHtml);
     }
 
-    // ROUTE 2: De Stremio Addon (voor alle andere verzoeken)
     router(req, res, () => {
         res.statusCode = 404;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ err: 'Not Found. Gebruik /api/gethtml?id=tt...' voor diagnose.' }));
+        res.end(JSON.stringify({ err: 'Not Found. Gebruik /api/gethtml?id=tt... voor diagnose.' }));
     });
 };
