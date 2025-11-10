@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Addon HTML Debugger</title>
+    <style>
+        body { font-family: sans-serif; background-color: #222; color: #eee; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background-color: #333; padding: 20px; border-radius: 8px; }
+        h1, h2 { color: #ffc107; }
+        label { display: block; margin-bottom: 5px; }
+        input, select, button { width: 100%; padding: 10px; margin-bottom: 15px; border-radius: 4px; border: 1px solid #555; background-color: #444; color: #eee; box-sizing: border-box; }
+        button { background-color: #ffc107; color: #222; font-weight: bold; cursor: pointer; }
+        button:hover { background-color: #ffca2c; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+        textarea { width: 100%; height: 50vh; background-color: #282c34; color: #abb2bf; border: 1px solid #555; border-radius: 4px; font-family: monospace; white-space: pre; overflow-wrap: normal; overflow-x: scroll; }
+        #status { font-style: italic; color: #999; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Addon HTML Debugger</h1>
+        <p>Deze tool helpt bij het analyseren van de HTML van de laatste pagina in de VidSrc redirect-keten.</p>
+        
+        <label for="imdbId">IMDb ID (bijv. tt0114369):</label>
+        <input type="text" id="imdbId" placeholder="tt...">
+
+        <label for="type">Type:</label>
+        <select id="type">
+            <option value="movie" selected>Film</option>
+            <option value="series">Serie</option>
+        </select>
+
+        <button id="fetchBtn" onclick="fetchHtml()">Fetch Finale Pagina HTML</button>
+
+        <h2>Resultaat:</h2>
+        <p id="status">Wachtend op input...</p>
+        <textarea id="result" readonly placeholder="De HTML-code van de laatste pagina verschijnt hier..."></textarea>
+    </div>
+
+    <script>
+        const imdbIdInput = document.getElementById('imdbId');
+        const typeSelect = document.getElementById('type');
+        const fetchBtn = document.getElementById('fetchBtn');
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('result');
+
+        async function fetchHtml() {
+            const imdbId = imdbIdInput.value.trim();
+            if (!imdbId.startsWith('tt')) {
+                alert('Voer een geldige IMDb ID in (beginnend met tt).');
+                return;
+            }
+
+            statusEl.textContent = 'Bezig met ophalen... Dit kan tot 15 seconden duren.';
+            resultEl.value = '';
+            fetchBtn.disabled = true;
+
+            // We kiezen één domein om de keten te starten.
+            const domain = 'vsrc.su'; 
+            const apiType = typeSelect.value === 'series' ? 'tv' : 'movie';
+            const initialTarget = `https://${domain}/embed/${apiType}/${imdbId}`;
+
+            // Dit simuleert de headers die de addon normaal zou sturen.
+            const requestHeaders = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            };
+
+            try {
+                const response = await fetch('/api/debug', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        targetUrl: initialTarget,
+                        sourceDomain: domain,
+                        headers: requestHeaders
+                    })
+                });
+
+                const responseText = await response.text();
+
+                if (response.ok) {
+                    statusEl.textContent = 'Succes! De volledige HTML staat hieronder. Kopieer en plak de volledige inhoud in uw antwoord.';
+                    resultEl.value = responseText;
+                } else {
+                    statusEl.textContent = `Fout (${response.status}): ${responseText.split('\n')[0]}`;
+                    resultEl.value = responseText;
+                }
+
+            } catch (error) {
+                statusEl.textContent = `Netwerkfout: ${error.message}`;
+                resultEl.value = `Er is een fout opgetreden bij het verbinden met de API. Controleer de Vercel logs.`;
+            } finally {
+                fetchBtn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
