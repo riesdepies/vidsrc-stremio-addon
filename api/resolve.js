@@ -1,35 +1,46 @@
 // --- HELPER FUNCTIES ---
 
 /**
- * Zoekt in een HTML-string naar een Base64-gecodeerde bestandsnaam binnen een atob() functie,
- * decodeert deze en geeft alleen de bestandsnaam terug (zonder het pad).
- * @param {string} htmlContent De volledige HTML-broncode van de pagina om te doorzoeken.
- * @returns {string|null} De opgeschoonde bestandsnaam (bijv. 'video.mp4') als deze wordt gevonden, anders null.
- */
+* Zoekt in een HTML-string naar een Base64-gecodeerde bestandsnaam binnen een atob() functie,
+* decodeert deze en geeft alleen de bestandsnaam terug (zonder het pad).
+* @param {string} htmlContent De volledige HTML-broncode van de pagina om te doorzoeken.
+* @returns {string|null} De opgeschoonde bestandsnaam (bijv. 'video.mp4') als deze wordt gevonden, anders null.
+*/
 function extractVidsrcFilename(htmlContent) {
-  const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/;
-  const match = htmlContent.match(regex);
-
-  if (match && match[1]) {
-    const base64String = match[1];
-    try {
-      // Node.js v16+ heeft atob() globaal beschikbaar.
-      const decodedString = atob(base64String);
-      const pathParts = decodedString.split('/');
-      return pathParts[pathParts.length - 1];
-    } catch (e) {
-      console.error("Fout bij het decoderen van de Base64-string:", e.message);
-      return null;
-    }
-  }
-  return null;
-}
-
-function extractM3u8Url(htmlContent) {
-    const regex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
+    const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/;
     const match = htmlContent.match(regex);
-    return match ? match[1] : null;
+
+    if (match && match[1]) {
+        const base64String = match[1];
+        try {
+            // Node.js v16+ heeft atob() globaal beschikbaar.
+            const decodedString = atob(base64String);
+            const pathParts = decodedString.split('/');
+            return pathParts[pathParts.length - 1];
+        } catch (e) {
+            console.error("Fout bij het decoderen van de Base64-string:", e.message);
+            return null;
+        }
+    }
+    return null;
 }
+
+/**
+ * AANGEPASTE FUNCTIE
+ * Extraheert een M3U8 URL uit HTML-content.
+ * Zoekt zowel naar directe links als naar links binnen JavaScript-variabelen zoals 'file:' of 'source:'.
+ * @param {string} htmlContent De HTML om te doorzoeken.
+ * @returns {string|null} De gevonden M3U8 URL of null.
+ */
+function extractM3u8Url(htmlContent) {
+    // Regex die zoekt naar 'file:"..."' of 'source:"..."' en de M3U8 URL eruit haalt.
+    const regex = /(?:file|source)\s*:\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/;
+    const match = htmlContent.match(regex);
+    // Als de eerste regex slaagt, geef de URL terug (de eerste capture group).
+    // Zo niet, probeer de oude, simpelere regex voor het geval er toch een directe link is.
+    return match ? match[1] : htmlContent.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/)?.[0] || null;
+}
+
 
 function findJsIframeSrc(html) {
     const combinedRegex = /(?:src:\s*|\.src\s*=\s*)["']([^"']+)["']/g;
@@ -66,7 +77,7 @@ module.exports = async (req, res) => {
     if (!targetUrl || !sourceDomain || !headers) {
         return res.status(400).json({ error: 'Bad Request: targetUrl, sourceDomain, and headers are required' });
     }
-    
+
     const MAX_REDIRECTS = 5;
     const UNAVAILABLE_TEXT = 'This media is unavailable at the moment.';
     const visitedUrls = new Set();
@@ -80,8 +91,8 @@ module.exports = async (req, res) => {
     try {
         for (let step = 1; step <= MAX_REDIRECTS; step++) {
             if (visitedUrls.has(currentUrl)) {
-                 console.log(`[RESOLVER] URL already visited, breaking loop: ${currentUrl}`);
-                 break;
+                console.log(`[RESOLVER] URL already visited, breaking loop: ${currentUrl}`);
+                break;
             }
             visitedUrls.add(currentUrl);
 
@@ -97,14 +108,14 @@ module.exports = async (req, res) => {
                 console.log(`[RESOLVER] Fetch failed for ${currentUrl} with status ${response.status}`);
                 break;
             }
-            
+
             const html = await response.text();
 
             if (step === 1 && html.includes(UNAVAILABLE_TEXT)) {
                 console.log(`[RESOLVER] Media is unavailable. Aborting.`);
                 return res.status(499).json({ error: 'Media unavailable' });
             }
-            
+
             // Probeer de bestandsnaam te extraheren als we die nog niet hebben
             if (!foundFilename) {
                 foundFilename = extractVidsrcFilename(html);
@@ -117,10 +128,10 @@ module.exports = async (req, res) => {
             if (m3u8Url) {
                 console.log(`[RESOLVER] Success, found M3U8: ${m3u8Url}`);
                 // Voeg de gevonden bestandsnaam toe aan de respons
-                return res.status(200).json({ 
-                    masterUrl: m3u8Url, 
+                return res.status(200).json({
+                    masterUrl: m3u8Url,
                     sourceDomain: sourceDomain,
-                    filename: foundFilename 
+                    filename: foundFilename
                 });
             }
 
@@ -128,13 +139,13 @@ module.exports = async (req, res) => {
             if (nextIframeSrc) {
                 previousUrl = currentUrl;
                 currentUrl = new URL(nextIframeSrc, currentUrl).href;
-                 console.log(`[RESOLVER] Found next iframe, redirecting to: ${currentUrl}`);
+                console.log(`[RESOLVER] Found next iframe, redirecting to: ${currentUrl}`);
             } else {
                 console.log('[RESOLVER] No more iframes found.');
                 break;
             }
         }
-        
+
         console.log(`[RESOLVER] Chain finished without result for ${targetUrl}`);
         return res.status(404).json({ error: 'M3U8 not found in chain' });
 
