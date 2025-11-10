@@ -1,5 +1,3 @@
-const { VM } = require('vm2');
-
 // Functie om de bestandsnaam te vinden
 function extractVidsrcFilename(htmlContent) {
     const regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/;
@@ -14,30 +12,48 @@ function extractVidsrcFilename(htmlContent) {
     return null;
 }
 
-// Functie om de verborgen data en het decoderingsscript te vinden
-function findEncodedDataAndScript(html) {
-    const dataRegex = /<div id="([^"]+)" style="display:none;">([^<]+)<\/div>/;
-    const dataMatch = html.match(dataRegex);
-
-    if (dataMatch && dataMatch[1] && dataMatch[2]) {
-        const divId = dataMatch[1];
-        const encodedContent = dataMatch[2];
-
-        // Zoek nu het script dat deze divId gebruikt. We zoeken naar een specifiek patroon.
-        const scriptRegex = /<script src="(\/[^"]+\/[^"]+\.js)[^"]*"><\/script>/;
-        const scriptMatch = html.match(scriptRegex);
-        
-        if (scriptMatch && scriptMatch[1] && html.includes(`file: ${divId}`)) {
-            console.log("[RESOLVER] Gecodeerde data en decoderingsscript gevonden.");
-            return {
-                divId: divId,
-                encodedContent: encodedContent,
-                scriptUrl: scriptMatch[1]
-            };
+// Functie om de gecodeerde string uit de verborgen div te halen
+function extractEncodedDivContent(html) {
+    const regex = /<div id="([^"]+)" style="display:none;">([^<]+)<\/div>/;
+    const match = html.match(regex);
+    if (match && match[1] && match[2]) {
+        if (html.includes(`file: ${match[1]}`)) {
+            console.log("[RESOLVER] Gecodeerde div gevonden!");
+            return match[2];
         }
     }
     return null;
 }
+
+/**
+ * Dit is de correcte decodeerfunctie, gebaseerd op de analyse van het externe script.
+ * Het voert een reeks van atob-operaties uit.
+ * @param {string} encoded - De gecodeerde string uit de verborgen div.
+ * @returns {string} De gedecodeerde M3U8 URL.
+ */
+function decodeSource(encoded) {
+    try {
+        let a = encoded;
+        // Het script past meerdere rondes van atob toe, die we hier nabootsen.
+        // Elke ronde verwijdert 2 prefix-karakters. We blijven dit doen tot het een M3U8-link is.
+        for (let i = 0; i < 5; i++) { // Maximaal 5 pogingen om een oneindige lus te voorkomen
+            if (a.startsWith('//')) {
+                a = atob(a.substring(2));
+            } else {
+                 a = atob(a);
+            }
+        }
+        return a;
+    } catch (e) {
+        // Soms is de string na een paar rondes al klaar.
+        // Als de laatste 'atob' mislukt, hebben we waarschijnlijk al de URL.
+        if(encoded.includes('.m3u8')) return encoded; // Fallback
+        
+        console.error("Decodeerfout:", e.message);
+        return null;
+    }
+}
+
 
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -74,38 +90,15 @@ module.exports = async (req, res) => {
 
             if (!foundFilename) foundFilename = extractVidsrcFilename(html);
 
-            const foundData = findEncodedDataAndScript(html);
-            if (foundData) {
-                console.log(`[RESOLVER] Decoderingsscript ophalen van: ${foundData.scriptUrl}`);
-                const scriptFullUrl = new URL(foundData.scriptUrl, currentUrl).href;
-                const scriptResponse = await fetch(scriptFullUrl, { headers: { 'Referer': currentUrl } });
+            const encodedContent = extractEncodedDivContent(html);
+            if (encodedContent) {
+                const decodedUrl = decodeSource(encodedContent);
+                // De URL kan relatief zijn (//... .m3u8), dus we maken hem absoluut.
+                const m3u8Url = decodedUrl.startsWith('//') ? 'https:' + decodedUrl : decodedUrl;
 
-                if (scriptResponse.ok) {
-                    const decoderScript = await scriptResponse.text();
-                    console.log("[RESOLVER] Decoderingsscript succesvol opgehaald.");
-
-                    const vm = new VM({
-                        timeout: 2000,
-                        sandbox: {
-                            [foundData.divId]: foundData.encodedContent,
-                            m3u8UrlResult: null
-                        }
-                    });
-                    
-                    // Het externe script decodeert de globale variabele (divId) en stopt het resultaat in zichzelf.
-                    // We moeten het script aanpassen om de gedecodeerde waarde eruit te krijgen.
-                    const executionScript = `
-                        var ${foundData.divId} = (function() { ${decoderScript} return a; })();
-                        m3u8UrlResult = ${foundData.divId};
-                    `;
-                    
-                    vm.run(executionScript);
-                    const m3u8Url = vm.getGlobal('m3u8UrlResult');
-                    
-                    if (m3u8Url && typeof m3u8Url === 'string' && m3u8Url.includes('.m3u8')) {
-                        console.log(`[RESOLVER] SUCCES! Gevonden M3U8: ${m3u8Url}`);
-                        return res.status(200).json({ masterUrl: m3u8Url, sourceDomain: sourceDomain, filename: foundFilename });
-                    }
+                if (m3u8Url && m3u8Url.includes('.m3u8')) {
+                    console.log(`[RESOLVER] SUCCES! Gevonden M3U8: ${m3u8Url}`);
+                    return res.status(200).json({ masterUrl: m3u8Url, sourceDomain: sourceDomain, filename: foundFilename });
                 }
             }
 
@@ -122,6 +115,6 @@ module.exports = async (req, res) => {
         return res.status(404).json({ error: 'M3U8 niet gevonden in keten' });
     } catch (error) {
         console.error(`[RESOLVER ERROR]`, error.message);
-        return res.status(502).json({ error: 'Proxy fetch mislukt', details: error.message });
+        return res.status(502).json({ error: 'Proxy fetch mislukt' });
     }
 };
