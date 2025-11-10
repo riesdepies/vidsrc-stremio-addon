@@ -37,23 +37,20 @@ function extractEncodedM3u8Url(htmlContent) {
 }
 
 /**
- * AANGEPASTE FUNCTIE
  * Zoekt naar een obfuscated/packed JavaScript blok (eval) en zoekt daarbinnen
  * naar een base64-gecodeerde string die de M3U8-link bevat.
  * @param {string} htmlContent De volledige HTML om te doorzoeken.
  * @returns {string|null} De gevonden en gedecodeerde M3U8 URL of null.
  */
 function extractFromPackedJs(htmlContent) {
-    // Regex om het hele 'eval(function(p,a,c,k,e,d){...})' blok te vinden.
-    // De 's' flag zorgt ervoor dat '.' ook newlines meepakt.
-    const packedRegex = /(eval\(function\(p,a,c,k,e,d\)\{.*?\}\\)\))/s;
+    // GECORRIGEERDE REGEX: Deze regex zoekt correct naar het 'eval(...)' blok.
+    const packedRegex = /eval\(function\(p,a,c,k,e,d\)\{.*?\}\)/s;
     const packedMatch = htmlContent.match(packedRegex);
 
     if (packedMatch && packedMatch[0]) {
         console.log('[RESOLVER] GEPACKT JS-BLOK GEVONDEN. AAN HET ZOEKEN...');
         const scriptBlock = packedMatch[0];
         
-        // Nu, zoek binnen dit blok naar base64 strings
         const base64Regex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
         let match;
         while ((match = base64Regex.exec(scriptBlock)) !== null) {
