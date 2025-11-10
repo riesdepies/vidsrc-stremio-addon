@@ -25,27 +25,51 @@ function extractVidsrcFilename(htmlContent) {
 }
 
 /**
+ * VERBETERDE FUNCTIE
  * Extraheert een M3U8 URL uit HTML-content.
- * Zoekt zowel naar directe links als naar links binnen JavaScript-variabelen zoals 'file:' of 'source:'.
+ * Deze functie zoekt nu op drie manieren:
+ * 1. Naar Base64-gecodeerde strings in atob() calls die een M3U8-link bevatten.
+ * 2. Naar M3U8 links binnen JavaScript variabelen zoals 'file:"..."' of 'source:"..."'.
+ * 3. Naar kale M3U8 links in de tekst.
  * @param {string} htmlContent De HTML om te doorzoeken.
  * @returns {string|null} De gevonden M3U8 URL of null.
  */
 function extractM3u8Url(htmlContent) {
-    const regex = /(?:file|source)\s*:\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/;
-    const match = htmlContent.match(regex);
-    return match ? match[1] : htmlContent.match(/(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/)?.[0] || null;
+    // 1. Zoek naar alle Base64-gecodeerde strings en decodeer ze.
+    const atobRegex = /atob\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+    let match;
+    while ((match = atobRegex.exec(htmlContent)) !== null) {
+        try {
+            const decodedString = atob(match[1]);
+            // Als de gedecodeerde string een M3U8-link is, hebben we hem.
+            if (decodedString.includes('.m3u8')) {
+                // Soms zit er nog rommel omheen, dus extraheer de URL zelf.
+                const urlMatch = decodedString.match(/(https?:\/\/[^\s'"]+\.m3u8[^\s'"]*)/);
+                if (urlMatch) return urlMatch[0];
+            }
+        } catch (e) {
+            // Negeer decodeerfouten, ga door naar de volgende.
+        }
+    }
+
+    // 2. Als dat niet lukt, zoek naar 'file:"..."' of 'source:"..."'
+    const sourceRegex = /(?:file|source)\s*:\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/;
+    const sourceMatch = htmlContent.match(sourceRegex);
+    if (sourceMatch) return sourceMatch[1];
+
+    // 3. Als laatste redmiddel, zoek naar een kale M3U8 link.
+    const directRegex = /(https?:\/\/[^\s'"]+?\.m3u8[^\s'"]*)/;
+    const directMatch = htmlContent.match(directRegex);
+    return directMatch ? directMatch[0] : null;
 }
 
 
 function findJsIframeSrc(html) {
-    // Deze regex vindt bronnen die dynamisch in JS worden ingesteld, zoals in de cloudnestra pagina.
     const combinedRegex = /(?:src|source)\s*:\s*["']([^"']+)["']/g;
     let match;
     while ((match = combinedRegex.exec(html)) !== null) {
         const url = match[1];
         if (url) {
-            // Zorg ervoor dat we geen .js bestanden of andere ongewenste links pakken.
-            // Een iframe src zal doorgaans geen extensie hebben of eindigen op .php/.html
             const path = url.split('?')[0].split('#')[0];
             if (!path.endsWith('.js') && url.startsWith('/')) return url;
         }
@@ -85,7 +109,7 @@ module.exports = async (req, res) => {
     let previousUrl = null;
     const initialReferer = `https://${sourceDomain}/`;
     let foundFilename = null;
-    let cookies = null; // Variabele om cookies op te slaan
+    let cookies = null;
 
     try {
         for (let step = 1; step <= MAX_REDIRECTS; step++) {
@@ -98,7 +122,6 @@ module.exports = async (req, res) => {
             const finalHeaders = { ...headers, 'Referer': previousUrl || initialReferer };
             delete finalHeaders['host'];
 
-            // Voeg de opgeslagen cookies toe aan de request header
             if (cookies) {
                 finalHeaders['Cookie'] = cookies;
             }
@@ -108,7 +131,6 @@ module.exports = async (req, res) => {
                 signal: AbortSignal.timeout(15000)
             });
             
-            // Sla de 'set-cookie' header op voor de volgende request
             const setCookieHeader = response.headers.get('set-cookie');
             if (setCookieHeader) {
                 cookies = setCookieHeader;
@@ -117,8 +139,7 @@ module.exports = async (req, res) => {
 
             if (!response.ok) {
                 console.log(`[RESOLVER] Fetch failed for ${currentUrl} with status ${response.status}`);
-                // Stop de loop als de status niet ok is (bijv. 404).
-                return res.status(404).json({ error: `Fetch failed for ${currentUrl} with status ${response.status}` });
+                break; 
             }
 
             const html = await response.text();
@@ -163,4 +184,6 @@ module.exports = async (req, res) => {
         console.error(`[RESOLVER ERROR] Error during fetch chain for ${targetUrl}:`, error.message);
         return res.status(502).json({ error: 'Proxy fetch failed', details: error.message });
     }
-};
+};```
+
+Vervang de inhoud van `api/resolve.js` met deze nieuwe code en deploy opnieuw. Dit zou de laatste hindernis moeten zijn. De nieuwe `extractM3u8Url` is robuuster en zou de verborgen link nu moeten kunnen vinden.
