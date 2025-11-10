@@ -4,7 +4,7 @@ const { addonBuilder } = require("stremio-addon-sdk");
 const host = process.env.VERCEL_URL || 'http://127.0.0.1:3000';
 const iconUrl = host.startsWith('http') ? `${host}/icon.png` : `https://${host}/icon.png`;
 
-// --- MANIFEST (VERSIE 1.5.3) ---
+// --- MANIFEST (VERSIE 1.5.1) ---
 const manifest = {
     "id": "community.nepflix.ries",
     "version": "1.5.3",
@@ -17,8 +17,7 @@ const manifest = {
     "idPrefixes": ["tt"]
 };
 
-// --- BIJGEWERKTE VIDSRC DOMEINEN ---
-const VIDSRC_DOMAINS = ["vidsrcme.ru", "vidsrcme.su", "vidsrc-me.ru", "vidsrc-me.su", "vsrc.su"];
+const VIDSRC_DOMAINS = ["vidsrc.xyz", "vidsrc.in", "vidsrc.io", "vidsrc.me", "vidsrc.net", "vidsrc.pm", "vidsrc.vc", "vidsrc.to", "vidsrc.icu"];
 
 // --- BROWSERPROFIELEN VOOR REALISTISCHE HEADERS ---
 const BROWSER_PROFILES = [
