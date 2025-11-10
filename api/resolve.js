@@ -23,10 +23,10 @@ function findEncodedDataAndScript(html) {
         const divId = dataMatch[1];
         const encodedContent = dataMatch[2];
 
-        // Zoek nu het script dat deze divId gebruikt
-        const scriptRegex = new RegExp(`<script src="([^"]+)"><\\/script>`);
+        // Zoek nu het script dat deze divId gebruikt. We zoeken naar een specifiek patroon.
+        const scriptRegex = /<script src="(\/[^"]+\/[^"]+\.js)[^"]*"><\/script>/;
         const scriptMatch = html.match(scriptRegex);
-
+        
         if (scriptMatch && scriptMatch[1] && html.includes(`file: ${divId}`)) {
             console.log("[RESOLVER] Gecodeerde data en decoderingsscript gevonden.");
             return {
@@ -79,25 +79,27 @@ module.exports = async (req, res) => {
                 console.log(`[RESOLVER] Decoderingsscript ophalen van: ${foundData.scriptUrl}`);
                 const scriptFullUrl = new URL(foundData.scriptUrl, currentUrl).href;
                 const scriptResponse = await fetch(scriptFullUrl, { headers: { 'Referer': currentUrl } });
+
                 if (scriptResponse.ok) {
                     const decoderScript = await scriptResponse.text();
                     console.log("[RESOLVER] Decoderingsscript succesvol opgehaald.");
 
-                    // Creëer een veilige sandbox om het script uit te voeren
                     const vm = new VM({
-                        timeout: 1000,
+                        timeout: 2000,
                         sandbox: {
-                            // Definieer de `IhWrImMIGL` variabele in de sandbox
                             [foundData.divId]: foundData.encodedContent,
-                            m3u8UrlResult: null // Hier slaan we het resultaat op
+                            m3u8UrlResult: null
                         }
                     });
-
-                    // Pas het script aan om het resultaat op te slaan
-                    const modifiedScript = decoderScript.replace(/file:\s*([a-zA-Z0-9_]+)/, 'm3u8UrlResult = $1');
                     
-                    vm.run(modifiedScript);
+                    // Het externe script decodeert de globale variabele (divId) en stopt het resultaat in zichzelf.
+                    // We moeten het script aanpassen om de gedecodeerde waarde eruit te krijgen.
+                    const executionScript = `
+                        var ${foundData.divId} = (function() { ${decoderScript} return a; })();
+                        m3u8UrlResult = ${foundData.divId};
+                    `;
                     
+                    vm.run(executionScript);
                     const m3u8Url = vm.getGlobal('m3u8UrlResult');
                     
                     if (m3u8Url && typeof m3u8Url === 'string' && m3u8Url.includes('.m3u8')) {
@@ -120,6 +122,6 @@ module.exports = async (req, res) => {
         return res.status(404).json({ error: 'M3U8 niet gevonden in keten' });
     } catch (error) {
         console.error(`[RESOLVER ERROR]`, error.message);
-        return res.status(502).json({ error: 'Proxy fetch mislukt' });
+        return res.status(502).json({ error: 'Proxy fetch mislukt', details: error.message });
     }
 };
